@@ -1,4 +1,4 @@
-export const MIN_TAILSCALE_CORE = {
+const MIN_TAILSCALE_CORE = {
   major: 1,
   minor: 19,
   patch: 25,

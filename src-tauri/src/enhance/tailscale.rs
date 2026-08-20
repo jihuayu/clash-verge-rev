@@ -100,14 +100,51 @@ fn inject_dns(config: &mut Mapping, proxy_name: &str) {
         return;
     }
 
+    inject_nameserver_policy(&mut dns, proxy_name);
+    inject_fake_ip_filter(&mut dns);
+    config.insert(dns_key, Value::Mapping(dns));
+}
+
+fn inject_nameserver_policy(dns: &mut Mapping, proxy_name: &str) {
     let policy_key = Value::from("nameserver-policy");
-    let mut policy = dns
-        .get(&policy_key)
-        .and_then(Value::as_mapping)
-        .cloned()
-        .unwrap_or_default();
-    policy.insert(Value::from(MAGIC_DNS_POLICY), Value::from(format!("ts://{proxy_name}")));
-    dns.insert(policy_key, Value::Mapping(policy));
+    let resolver = format!("ts://{proxy_name}");
+    match dns.get(&policy_key) {
+        Some(Value::Sequence(seq)) => {
+            if nameserver_policy_covers(seq, MAGIC_DNS_POLICY) {
+                return;
+            }
+            let mut seq = seq.clone();
+            seq.push(Value::from(format!("{MAGIC_DNS_POLICY}={resolver}")));
+            dns.insert(policy_key, Value::Sequence(seq));
+        }
+        Some(Value::Mapping(map)) => {
+            let mut map = map.clone();
+            map.insert(Value::from(MAGIC_DNS_POLICY), Value::from(resolver));
+            dns.insert(policy_key, Value::Mapping(map));
+        }
+        _ => {
+            let mut map = Mapping::new();
+            map.insert(Value::from(MAGIC_DNS_POLICY), Value::from(resolver));
+            dns.insert(policy_key, Value::Mapping(map));
+        }
+    }
+}
+
+fn nameserver_policy_covers(seq: &Sequence, domain: &str) -> bool {
+    let prefix = format!("{domain}=");
+    seq.iter().any(|item| match item {
+        Value::String(entry) => entry == domain || entry.starts_with(&prefix),
+        Value::Mapping(map) => map.contains_key(Value::from(domain)),
+        _ => false,
+    })
+}
+
+fn inject_fake_ip_filter(dns: &mut Mapping) {
+    // Whitelist mode means "only fake these domains". Adding `+.ts.net` there would
+    // replace MagicDNS answers with fake-ips instead of keeping the 100.x addresses.
+    if dns.get(Value::from("fake-ip-filter-mode")).and_then(Value::as_str) == Some("whitelist") {
+        return;
+    }
 
     let filter_key = Value::from("fake-ip-filter");
     let mut filter = sequence_of(dns.get(&filter_key));
@@ -115,8 +152,6 @@ fn inject_dns(config: &mut Mapping, proxy_name: &str) {
         filter.push(Value::from(MAGIC_DNS_FILTER));
         dns.insert(filter_key, Value::Sequence(filter));
     }
-
-    config.insert(dns_key, Value::Mapping(dns));
 }
 
 fn sequence_of(value: Option<&Value>) -> Sequence {
@@ -284,6 +319,79 @@ mod tests {
             .and_then(Value::as_sequence)
             .expect("fake-ip-filter");
         assert_eq!(filter, &vec![Value::from("+.lan"), Value::from("+.ts.net")]);
+    }
+
+    #[test]
+    fn existing_nameserver_policy_entries_are_kept() {
+        let enabled = mapping(&[(
+            "dns",
+            Value::Mapping(mapping(&[
+                ("enable", Value::from(true)),
+                (
+                    "nameserver-policy",
+                    Value::Mapping(mapping(&[("+.corp.local", Value::from("10.0.0.1"))])),
+                ),
+            ])),
+        )]);
+        let result = use_tailscale(enabled, &enabled_opts(None, None));
+        let policy = result
+            .get(Value::from("dns"))
+            .and_then(Value::as_mapping)
+            .and_then(|dns| dns.get(Value::from("nameserver-policy")))
+            .and_then(Value::as_mapping)
+            .expect("nameserver-policy");
+        assert_eq!(policy.get(Value::from("+.corp.local")), Some(&Value::from("10.0.0.1")));
+        assert_eq!(
+            policy.get(Value::from("+.ts.net")),
+            Some(&Value::from("ts://Tailscale"))
+        );
+    }
+
+    #[test]
+    fn sequence_nameserver_policy_is_appended_not_replaced() {
+        let enabled = mapping(&[(
+            "dns",
+            Value::Mapping(mapping(&[
+                ("enable", Value::from(true)),
+                (
+                    "nameserver-policy",
+                    Value::Sequence(vec![Value::from("+.corp.local=10.0.0.1")]),
+                ),
+            ])),
+        )]);
+        let result = use_tailscale(enabled, &enabled_opts(None, None));
+        let policy = result
+            .get(Value::from("dns"))
+            .and_then(Value::as_mapping)
+            .and_then(|dns| dns.get(Value::from("nameserver-policy")))
+            .and_then(Value::as_sequence)
+            .expect("nameserver-policy sequence");
+        assert_eq!(
+            policy,
+            &vec![
+                Value::from("+.corp.local=10.0.0.1"),
+                Value::from("+.ts.net=ts://Tailscale"),
+            ]
+        );
+    }
+
+    #[test]
+    fn fake_ip_whitelist_is_not_given_magic_dns() {
+        let enabled = mapping(&[(
+            "dns",
+            Value::Mapping(mapping(&[
+                ("enable", Value::from(true)),
+                ("fake-ip-filter-mode", Value::from("whitelist")),
+                ("fake-ip-filter", Value::Sequence(vec![Value::from("+.example.com")])),
+            ])),
+        )]);
+        let result = use_tailscale(enabled, &enabled_opts(None, None));
+        let dns = result.get(Value::from("dns")).and_then(Value::as_mapping).expect("dns");
+        let filter = dns
+            .get(Value::from("fake-ip-filter"))
+            .and_then(Value::as_sequence)
+            .expect("fake-ip-filter");
+        assert_eq!(filter, &vec![Value::from("+.example.com")]);
     }
 
     #[test]

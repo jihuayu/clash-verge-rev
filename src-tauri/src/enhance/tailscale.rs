@@ -108,17 +108,14 @@ fn inject_dns(config: &mut Mapping, proxy_name: &str) {
 fn inject_nameserver_policy(dns: &mut Mapping, proxy_name: &str) {
     let policy_key = Value::from("nameserver-policy");
     let resolver = format!("ts://{proxy_name}");
-    match dns.get(&policy_key) {
-        Some(Value::Sequence(seq)) => {
-            if nameserver_policy_covers(seq, MAGIC_DNS_POLICY) {
-                return;
+    match dns.remove(&policy_key) {
+        Some(Value::Sequence(mut seq)) => {
+            if !nameserver_policy_covers(&seq, MAGIC_DNS_POLICY) {
+                seq.push(Value::from(format!("{MAGIC_DNS_POLICY}={resolver}")));
             }
-            let mut seq = seq.clone();
-            seq.push(Value::from(format!("{MAGIC_DNS_POLICY}={resolver}")));
             dns.insert(policy_key, Value::Sequence(seq));
         }
-        Some(Value::Mapping(map)) => {
-            let mut map = map.clone();
+        Some(Value::Mapping(mut map)) => {
             map.insert(Value::from(MAGIC_DNS_POLICY), Value::from(resolver));
             dns.insert(policy_key, Value::Mapping(map));
         }

@@ -157,7 +157,7 @@ mod tests {
     fn official_login_urls_are_taken_from_the_latest_matching_line() {
         let logs = [
             r#"time="2026-08-20T00:00:00Z" level=info msg="[Tailscale](Tailscale) backend: authentication required; visit https://login.tailscale.com/a/old""#,
-            r#"[Tailscale](Tailscale) To authenticate, visit https://login.tailscale.com/a/new,"#,
+            r"[Tailscale](Tailscale) To authenticate, visit https://login.tailscale.com/a/new,",
         ];
         assert_eq!(
             extract_login_url(logs),

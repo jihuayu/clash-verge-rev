@@ -1356,6 +1356,36 @@ export interface TranslationResources {
             silentStart: string
           }
         }
+        tailscale: {
+          actions: {
+            openLogin: string
+          }
+          fields: {
+            authKey: string
+            controlUrl: string
+            enable: string
+            login: string
+            status: string
+          }
+          placeholders: {
+            authKey: string
+            controlUrl: string
+          }
+          status: {
+            connected: string
+            connecting: string
+            disabled: string
+            needsLogin: string
+            unsupportedCore: string
+            waiting: string
+          }
+          title: string
+          tooltips: {
+            authKey: string
+            controlUrl: string
+            enable: string
+          }
+        }
       }
       statuses: {
         clash: {

@@ -29,6 +29,36 @@
         }
       }
     },
+    "tailscale": {
+      "title": "Tailscale",
+      "fields": {
+        "enable": "启用 Tailscale",
+        "status": "状态",
+        "login": "登录",
+        "authKey": "授权密钥",
+        "controlUrl": "控制服务器"
+      },
+      "tooltips": {
+        "enable": "无需安装 Tailscale 客户端即可加入 tailnet。访问 100.x 地址和 *.ts.net 时走 MagicDNS。",
+        "authKey": "可选。在 Tailscale 管理后台生成 tskey-auth-… 密钥。留空则通过浏览器登录。",
+        "controlUrl": "留空使用官方 Tailscale 控制面。仅在使用 Headscale 或其他协调服务器时填写。"
+      },
+      "placeholders": {
+        "authKey": "tskey-auth-…",
+        "controlUrl": "https://controlplane.tailscale.com"
+      },
+      "actions": {
+        "openLogin": "打开登录页"
+      },
+      "status": {
+        "disabled": "未启用",
+        "unsupportedCore": "需要 Mihomo v1.19.25 或更高版本",
+        "waiting": "等待内核…",
+        "connecting": "正在连接…",
+        "needsLogin": "需要登录",
+        "connected": "已连接"
+      }
+    },
     "proxyControl": {
       "tooltips": {
         "systemProxy": "修改操作系统的代理设置，如果开启失败，可手动修改操作系统的代理设置",

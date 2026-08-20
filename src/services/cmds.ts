@@ -172,6 +172,23 @@ export async function patchVergeConfig(payload: IVergeConfig) {
   return invoke<void>('patch_verge_config', { payload })
 }
 
+export interface TailscaleStatus {
+  enabled: boolean
+  available: boolean
+  alive: boolean
+  delay?: number | null
+  loginUrl?: string | null
+  needsLogin: boolean
+}
+
+export async function getTailscaleStatus() {
+  return invoke<TailscaleStatus>('get_tailscale_status')
+}
+
+export async function warmupTailscale() {
+  return invoke<TailscaleStatus>('warmup_tailscale')
+}
+
 export async function getSystemProxy() {
   return invoke<{
     enable: boolean

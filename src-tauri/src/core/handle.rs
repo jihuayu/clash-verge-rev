@@ -90,6 +90,10 @@ impl Handle {
         });
     }
 
+    pub fn notify_tailscale_login_url(url: &str) {
+        Self::send_event(FrontendEvent::TailscaleLoginUrl { url });
+    }
+
     pub fn set_is_exiting(&self) {
         self.is_exiting.store(true, Ordering::Release);
     }

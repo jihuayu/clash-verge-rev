@@ -6,6 +6,7 @@ import { useTranslation } from 'react-i18next'
 import { BasePage } from '@/components/base'
 import SettingClash from '@/components/setting/setting-clash'
 import SettingSystem from '@/components/setting/setting-system'
+import SettingTailscale from '@/components/setting/setting-tailscale'
 import SettingVergeAdvanced from '@/components/setting/setting-verge-advanced'
 import SettingVergeBasic from '@/components/setting/setting-verge-basic'
 import { openWebUrl } from '@/services/cmds'
@@ -88,6 +89,15 @@ const SettingPage = () => {
             }}
           >
             <SettingClash onError={onError} />
+          </Box>
+          <Box
+            sx={{
+              borderRadius: 2,
+              marginTop: 1.5,
+              backgroundColor: isDark ? '#282a36' : '#ffffff',
+            }}
+          >
+            <SettingTailscale onError={onError} />
           </Box>
         </Grid>
         <Grid size={6}>

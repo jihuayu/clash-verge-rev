@@ -29,6 +29,36 @@
         }
       }
     },
+    "tailscale": {
+      "title": "Tailscale",
+      "fields": {
+        "enable": "Enable Tailscale",
+        "status": "Status",
+        "login": "Login",
+        "authKey": "Auth Key",
+        "controlUrl": "Control URL"
+      },
+      "tooltips": {
+        "enable": "Join your tailnet from this app without installing the Tailscale client. Traffic to 100.x addresses and *.ts.net uses MagicDNS.",
+        "authKey": "Optional. Generate a tskey-auth-… key in the Tailscale admin console. Leave empty to log in through the browser.",
+        "controlUrl": "Leave empty for the official Tailscale control plane. Set this only when using Headscale or another coordination server."
+      },
+      "placeholders": {
+        "authKey": "tskey-auth-…",
+        "controlUrl": "https://controlplane.tailscale.com"
+      },
+      "actions": {
+        "openLogin": "Open login page"
+      },
+      "status": {
+        "disabled": "Off",
+        "unsupportedCore": "Needs Mihomo v1.19.25 or newer",
+        "waiting": "Waiting for the core…",
+        "connecting": "Connecting…",
+        "needsLogin": "Sign in required",
+        "connected": "Connected"
+      }
+    },
     "proxyControl": {
       "tooltips": {
         "systemProxy": "به امکانات تنظیم پروکسی سیستم عامل دسترسی پیدا کنید. اگر فعال‌سازی ناموفق بود، پروکسی سیستم عامل را به‌صورت دستی تغییر دهید",

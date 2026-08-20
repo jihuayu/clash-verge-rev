@@ -64,6 +64,7 @@ bitflags! {
         const LANGUAGE = 1 << 11;
         const LOG_LEVEL = 1 << 12;
         const LOG_FILE = 1 << 13;
+        const TAILSCALE = 1 << 14;
 
         const GROUP_SYS_TRAY = Self::SYSTRAY_MENU.bits()
                              | Self::SYSTRAY_TOOLTIP.bits()
@@ -197,6 +198,9 @@ fn determine_update_flags(patch: &IVerge) -> UpdateFlags {
     if tray_inline_outbound_modes.is_some() {
         update_flags.insert(UpdateFlags::SYSTRAY_MENU);
     }
+    if patch.enable_tailscale.is_some() || patch.tailscale_auth_key.is_some() || patch.tailscale_control_url.is_some() {
+        update_flags.insert(UpdateFlags::CLASH_CONFIG | UpdateFlags::TAILSCALE);
+    }
 
     update_flags
 }
@@ -262,6 +266,9 @@ async fn process_terminated_flags(update_flags: UpdateFlags, patch: &IVerge) -> 
         let log_max_size = patch.app_log_max_size.unwrap_or(128);
         let log_max_count = patch.app_log_max_count.unwrap_or(8);
         Logger::global().update_log_config(log_max_size, log_max_count).await?;
+    }
+    if update_flags.contains(UpdateFlags::TAILSCALE) {
+        super::on_tailscale_config_applied().await;
     }
     Ok(())
 }

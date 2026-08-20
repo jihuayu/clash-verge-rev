@@ -29,6 +29,36 @@
         }
       }
     },
+    "tailscale": {
+      "title": "Tailscale",
+      "fields": {
+        "enable": "啟用 Tailscale",
+        "status": "狀態",
+        "login": "登入",
+        "authKey": "授權金鑰",
+        "controlUrl": "控制伺服器"
+      },
+      "tooltips": {
+        "enable": "無需安裝 Tailscale 用戶端即可加入 tailnet。存取 100.x 位址與 *.ts.net 時走 MagicDNS。",
+        "authKey": "選填。在 Tailscale 管理後台產生 tskey-auth-… 金鑰。留空則透過瀏覽器登入。",
+        "controlUrl": "留空使用官方 Tailscale 控制面。僅在使用 Headscale 或其他協調伺服器時填寫。"
+      },
+      "placeholders": {
+        "authKey": "tskey-auth-…",
+        "controlUrl": "https://controlplane.tailscale.com"
+      },
+      "actions": {
+        "openLogin": "開啟登入頁"
+      },
+      "status": {
+        "disabled": "未啟用",
+        "unsupportedCore": "需要 Mihomo v1.19.25 或更高版本",
+        "waiting": "等待核心…",
+        "connecting": "正在連線…",
+        "needsLogin": "需要登入",
+        "connected": "已連線"
+      }
+    },
     "proxyControl": {
       "tooltips": {
         "systemProxy": "修改作業系統的代理設定，如果開啟失敗，可手動修改作業系統的代理設定",

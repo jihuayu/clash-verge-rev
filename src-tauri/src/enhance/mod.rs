@@ -3,6 +3,7 @@ pub mod field;
 mod merge;
 mod script;
 pub mod seq;
+pub(crate) mod tailscale;
 mod tun;
 
 use self::{
@@ -11,6 +12,7 @@ use self::{
     merge::use_merge,
     script::use_script,
     seq::{SeqMap, use_seq},
+    tailscale::{TailscaleEnhanceOpts, use_tailscale},
     tun::use_tun,
 };
 use crate::utils::dirs;
@@ -27,6 +29,14 @@ use std::collections::{HashMap, HashSet};
 use tokio::fs;
 
 type ResultLog = Vec<(String, String)>;
+
+fn nonempty_opt(value: &Option<String>) -> Option<String> {
+    value
+        .as_ref()
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+        .map(String::from)
+}
 #[derive(Debug)]
 struct ConfigValues {
     clash_config: Mapping,
@@ -37,6 +47,9 @@ struct ConfigValues {
     http_enabled: bool,
     enable_dns_settings: bool,
     enable_external_controller: bool,
+    enable_tailscale: bool,
+    tailscale_auth_key: Option<String>,
+    tailscale_control_url: Option<String>,
     #[cfg(not(target_os = "windows"))]
     redir_enabled: bool,
     #[cfg(target_os = "linux")]
@@ -101,6 +114,7 @@ async fn chain_item_or_default(item: Option<&PrfItem>, default_item: impl FnOnce
     }
 }
 
+#[allow(clippy::cognitive_complexity)]
 async fn get_config_values() -> ConfigValues {
     let clash = Config::clash().await;
     let clash_arc = clash.latest_arc();
@@ -118,17 +132,33 @@ async fn get_config_values() -> ConfigValues {
         ref verge_http_enabled,
         ref enable_dns_settings,
         ref enable_external_controller,
+        ref enable_tailscale,
+        ref tailscale_auth_key,
+        ref tailscale_control_url,
         ..
     } = **verge_arc;
     let enable_external_controller = enable_external_controller.unwrap_or(false);
 
-    let (clash_core, enable_tun, enable_builtin, socks_enabled, http_enabled, enable_dns_settings) = (
+    let (
+        clash_core,
+        enable_tun,
+        enable_builtin,
+        socks_enabled,
+        http_enabled,
+        enable_dns_settings,
+        enable_tailscale,
+        tailscale_auth_key,
+        tailscale_control_url,
+    ) = (
         Some(verge_arc.get_valid_clash_core()),
         enable_tun_mode.unwrap_or(false) && !Config::tun_suppressed_for_session(),
         enable_builtin_enhanced.unwrap_or(true),
         verge_socks_enabled.unwrap_or(false),
         verge_http_enabled.unwrap_or(false),
         enable_dns_settings.unwrap_or(false),
+        enable_tailscale.unwrap_or(false),
+        nonempty_opt(tailscale_auth_key),
+        nonempty_opt(tailscale_control_url),
     );
 
     #[cfg(not(target_os = "windows"))]
@@ -149,6 +179,9 @@ async fn get_config_values() -> ConfigValues {
         http_enabled,
         enable_dns_settings,
         enable_external_controller,
+        enable_tailscale,
+        tailscale_auth_key,
+        tailscale_control_url,
         #[cfg(not(target_os = "windows"))]
         redir_enabled,
         #[cfg(target_os = "linux")]
@@ -712,6 +745,9 @@ pub async fn enhance(profiles: &IProfiles) -> Result<(Mapping, HashSet<String>, 
         http_enabled,
         enable_dns_settings,
         enable_external_controller,
+        enable_tailscale,
+        tailscale_auth_key,
+        tailscale_control_url,
         #[cfg(not(target_os = "windows"))]
         redir_enabled,
         #[cfg(target_os = "linux")]
@@ -766,6 +802,19 @@ pub async fn enhance(profiles: &IProfiles) -> Result<(Mapping, HashSet<String>, 
         process_profile_items(config, exists_keys, result_map, merge_item, script_item, &profile_name).await;
 
     let config = authoritative.enforce(config);
+    let tailscale_state_dir = dirs::app_home_dir()
+        .ok()
+        .map(|dir| dir.join("tailscale").to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let config = use_tailscale(
+        config,
+        &TailscaleEnhanceOpts {
+            enable: enable_tailscale,
+            state_dir: &tailscale_state_dir,
+            auth_key: tailscale_auth_key.as_deref(),
+            control_url: tailscale_control_url.as_deref(),
+        },
+    );
     let config = ensure_lan_bind_address(config);
 
     let config = cleanup_proxy_groups(config);

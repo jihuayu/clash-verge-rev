@@ -10,6 +10,7 @@ interface VergeEvents {
   'verge://refresh-proxy-config': null
   /** A backend message for the user: `[status, message]`. */
   'verge://notice-message': [string, string]
+  'verge://tailscale-login-url': string
   'verge://timer-updated': string
   'verge://run-state-changed': RunState
   'verge://pending-failures-changed': null

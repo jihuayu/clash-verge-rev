@@ -17,6 +17,7 @@ pub enum FrontendEvent<'a> {
     RefreshProfiles,
     RefreshProxyConfig,
     NoticeMessage { status: &'a str, message: String },
+    TailscaleLoginUrl { url: &'a str },
     ProfileChanged { current_profile_id: &'a String },
     TimerUpdated { profile_index: &'a String },
     ProfileUpdateStarted { uid: &'a String },
@@ -273,6 +274,7 @@ impl NotificationSystem {
             FrontendEvent::NoticeMessage { status, message } => {
                 ("verge://notice-message", serde_json::to_value((status, message)))
             }
+            FrontendEvent::TailscaleLoginUrl { url } => ("verge://tailscale-login-url", Ok(json!(url))),
             FrontendEvent::ProfileChanged { current_profile_id } => ("profile-changed", Ok(json!(current_profile_id))),
             FrontendEvent::TimerUpdated { profile_index } => ("verge://timer-updated", Ok(json!(profile_index))),
             FrontendEvent::ProfileUpdateStarted { uid } => ("profile-update-started", Ok(json!({ "uid": uid }))),

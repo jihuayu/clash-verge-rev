@@ -79,6 +79,21 @@ pub struct IVerge {
     /// enable dns settings - this controls whether dns_config.yaml is applied
     pub enable_dns_settings: Option<bool>,
 
+    /// Inject a tsnet Tailscale outbound into the generated mihomo config.
+    pub enable_tailscale: Option<bool>,
+
+    #[serde(
+        serialize_with = "serialize_encrypted",
+        deserialize_with = "deserialize_encrypted",
+        skip_serializing_if = "Option::is_none",
+        default
+    )]
+    pub tailscale_auth_key: Option<String>,
+
+    /// Optional Headscale / custom coordination server URL.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tailscale_control_url: Option<String>,
+
     pub use_default_bypass: Option<bool>,
 
     pub system_proxy_bypass: Option<String>,
@@ -384,6 +399,7 @@ impl IVerge {
             enable_auto_light_weight_mode: Some(false),
             auto_light_weight_minutes: Some(10),
             enable_dns_settings: Some(false),
+            enable_tailscale: Some(false),
             home_cards: None,
             enable_external_controller: Some(false),
             ..Self::default()
@@ -485,6 +501,9 @@ impl IVerge {
         patch!(enable_auto_light_weight_mode);
         patch!(auto_light_weight_minutes);
         patch!(enable_dns_settings);
+        patch!(enable_tailscale);
+        patch!(tailscale_auth_key);
+        patch!(tailscale_control_url);
         patch!(home_cards);
         patch!(enable_external_controller);
     }

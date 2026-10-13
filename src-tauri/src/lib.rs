@@ -173,6 +173,7 @@ mod app_init {
             cmd::validate_dns_config,
             cmd::get_clash_logs,
             cmd::get_verge_config,
+            cmd::preview_mesh_coexistence,
             cmd::patch_verge_config,
             cmd::test_delay,
             cmd::get_app_dir,

@@ -1,0 +1,51 @@
+mode: rule
+ipv6: true
+mixed-port: 17890
+rules:
+- PROCESS-NAME,tailscaled,VERGE-MESH-UPLINK
+- IP-CIDR,100.101.2.3/32,VERGE-MESH-0,no-resolve
+- IP-CIDR,100.100.100.100/32,VERGE-MESH-0,no-resolve
+- IP-CIDR6,fd7a:115c:a1e0::123/128,VERGE-MESH-0,no-resolve
+- IP-CIDR,10.24.8.0/24,VERGE-MESH-0,no-resolve
+- DOMAIN-SUFFIX,example.ts.net,VERGE-MESH-0
+- MATCH,ordinary-proxy
+tun:
+  enable: false
+  stack: mixed
+  auto-route: true
+  strict-route: false
+  dns-hijack:
+  - any:53
+  auto-detect-interface: false
+  route-exclude-address:
+  - 100.101.2.3/32
+  - 100.100.100.100/32
+  - fd7a:115c:a1e0::123/128
+  - 10.24.8.0/24
+dns:
+  enable: true
+  enhanced-mode: fake-ip
+  fake-ip-range: 198.18.0.1/16
+  nameserver:
+  - https://1.1.1.1/dns-query
+  direct-nameserver-follow-policy: true
+  nameserver-policy:
+    +.example.ts.net:
+    - udp://100.100.100.100:53#VERGE-MESH-0
+  fake-ip-filter:
+  - +.example.ts.net
+proxies:
+- name: ordinary-proxy
+  type: socks5
+  server: 192.0.2.2
+  port: 1080
+- name: VERGE-MESH-UPLINK
+  type: direct
+  interface-name: en0
+  udp: true
+- name: VERGE-MESH-0
+  type: direct
+  interface-name: utun8
+  udp: true
+interface-name: en0
+find-process-mode: always

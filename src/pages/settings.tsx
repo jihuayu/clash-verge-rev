@@ -5,6 +5,7 @@ import { useTranslation } from 'react-i18next'
 
 import { BasePage } from '@/components/base'
 import SettingClash from '@/components/setting/setting-clash'
+import SettingMesh from '@/components/setting/setting-mesh'
 import SettingSystem from '@/components/setting/setting-system'
 import SettingVergeAdvanced from '@/components/setting/setting-verge-advanced'
 import SettingVergeBasic from '@/components/setting/setting-verge-basic'
@@ -88,6 +89,7 @@ const SettingPage = () => {
             }}
           >
             <SettingClash onError={onError} />
+            <SettingMesh />
           </Box>
         </Grid>
         <Grid size={6}>

@@ -66,6 +66,9 @@ pub struct IVerge {
 
     pub enable_tun_mode: Option<bool>,
 
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mesh_coexistence: Option<clash_verge_mesh::MeshConfig>,
+
     pub enable_auto_launch: Option<bool>,
 
     pub enable_silent_start: Option<bool>,
@@ -429,6 +432,7 @@ impl IVerge {
         patch!(tun_tray_icon);
 
         patch!(enable_tun_mode);
+        patch!(mesh_coexistence);
         patch!(enable_auto_launch);
         patch!(enable_silent_start);
         patch!(enable_hover_jump_navigator);

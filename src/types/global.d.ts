@@ -881,6 +881,7 @@ interface IVergeConfig {
   enable_tray_speed?: boolean
   tray_proxy_groups_display_mode?: 'default' | 'inline' | 'disable'
   tray_inline_outbound_modes?: boolean
+  mesh_coexistence?: IMeshCoexistence
   enable_tun_mode?: boolean
   enable_auto_light_weight_mode?: boolean
   auto_light_weight_minutes?: number
@@ -1049,3 +1050,20 @@ interface ITrafficWorkerLogMessage {
 type TrafficWorkerResponseMessage =
   | ITrafficWorkerSnapshotMessage
   | ITrafficWorkerLogMessage
+
+interface IMeshCoexistence {
+  enabled: boolean
+  external_policy_reviewed: boolean
+  experimental_tun: boolean
+  internet_interface: string
+  transport_processes: string[]
+  providers: {
+    kind: 'tailscale'
+    interface: string
+    cidrs: string[]
+    domains: string[]
+    dns_server: string | null
+    default_route: boolean
+    traffic_and_dns: boolean
+  }[]
+}

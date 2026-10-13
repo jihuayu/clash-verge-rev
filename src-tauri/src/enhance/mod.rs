@@ -32,6 +32,7 @@ struct ConfigValues {
     clash_config: Mapping,
     clash_core: Option<String>,
     enable_tun: bool,
+    mesh_coexistence: Option<clash_verge_mesh::MeshConfig>,
     enable_builtin: bool,
     socks_enabled: bool,
     http_enabled: bool,
@@ -137,6 +138,7 @@ async fn get_config_values() -> ConfigValues {
     #[cfg(target_os = "linux")]
     let tproxy_enabled = verge_arc.verge_tproxy_enabled.unwrap_or(false);
 
+    let mesh_coexistence = verge_arc.mesh_coexistence.clone();
     drop(verge_arc);
     drop(verge);
 
@@ -144,6 +146,7 @@ async fn get_config_values() -> ConfigValues {
         clash_config,
         clash_core,
         enable_tun,
+        mesh_coexistence,
         enable_builtin,
         socks_enabled,
         http_enabled,
@@ -707,6 +710,7 @@ pub async fn enhance(profiles: &IProfiles) -> Result<(Mapping, HashSet<String>, 
         clash_config,
         clash_core,
         enable_tun,
+        mesh_coexistence,
         enable_builtin,
         socks_enabled,
         http_enabled,
@@ -747,7 +751,8 @@ pub async fn enhance(profiles: &IProfiles) -> Result<(Mapping, HashSet<String>, 
     );
 
     let config = apply_builtin_scripts(config, clash_core, enable_builtin).await;
-    let config = use_tun(config, enable_tun);
+    let mesh_enabled = mesh_coexistence.as_ref().is_some_and(|m| m.enabled);
+    let config = use_tun(config, enable_tun, !mesh_enabled);
     let config = apply_dns_settings(config, enable_dns_settings).await;
 
     let authoritative = AuthoritativeFields::capture(&config, enable_dns_settings);
@@ -769,6 +774,14 @@ pub async fn enhance(profiles: &IProfiles) -> Result<(Mapping, HashSet<String>, 
     let config = ensure_lan_bind_address(config);
 
     let config = cleanup_proxy_groups(config);
+    let config = if let Some(mesh) = mesh_coexistence {
+        if mesh.enabled && crate::cmd::read_tailscale_status().await.exit_node_selected {
+            anyhow::bail!("Tailscale exit nodes are not supported by the coexistence plan");
+        }
+        clash_verge_mesh::compile(&config, &mesh, crate::cmd::mesh_platform()).map_err(anyhow::Error::msg)?
+    } else {
+        config
+    };
     let config = use_sort(config);
 
     let mut exists_keys_set = HashSet::new();
@@ -889,11 +902,11 @@ mod use_tun_tests {
     #[tokio::test]
     async fn the_switch_is_written_either_way() {
         assert_eq!(
-            tun_of(&use_tun(Mapping::new(), true)).get(Value::from("enable")),
+            tun_of(&use_tun(Mapping::new(), true, false)).get(Value::from("enable")),
             Some(&Value::from(true))
         );
         assert_eq!(
-            tun_of(&use_tun(Mapping::new(), false)).get(Value::from("enable")),
+            tun_of(&use_tun(Mapping::new(), false, false)).get(Value::from("enable")),
             Some(&Value::from(false))
         );
     }
@@ -902,14 +915,14 @@ mod use_tun_tests {
     async fn existing_tun_keys_survive_being_switched_on() {
         let config = mapping(&[("tun", Value::Mapping(mapping(&[("stack", Value::from("gvisor"))])))]);
 
-        let result = use_tun(config, true);
+        let result = use_tun(config, true, false);
 
         assert_eq!(tun_of(&result).get(Value::from("stack")), Some(&Value::from("gvisor")));
     }
 
     #[tokio::test]
     async fn enabling_tun_sets_up_fake_ip_dns() {
-        let result = use_tun(Mapping::new(), true);
+        let result = use_tun(Mapping::new(), true, false);
 
         let dns = dns_of(&result).expect("enabling tun should write dns settings");
         assert_eq!(dns.get(Value::from("enable")), Some(&Value::from(true)));
@@ -928,7 +941,7 @@ mod use_tun_tests {
             Value::Mapping(mapping(&[("enhanced-mode", Value::from("redir-host"))])),
         )]);
 
-        let result = use_tun(config, true);
+        let result = use_tun(config, true, false);
 
         let dns = dns_of(&result).expect("dns should still be present");
         assert_eq!(dns.get(Value::from("enhanced-mode")), Some(&Value::from("redir-host")));
@@ -937,7 +950,7 @@ mod use_tun_tests {
 
     #[tokio::test]
     async fn the_ipv6_fake_ip_range_follows_the_top_level_switch() {
-        let with_ipv6 = use_tun(mapping(&[("ipv6", Value::from(true))]), true);
+        let with_ipv6 = use_tun(mapping(&[("ipv6", Value::from(true))]), true, false);
         let dns = dns_of(&with_ipv6).expect("dns should be written");
         assert_eq!(dns.get(Value::from("ipv6")), Some(&Value::from(true)));
         assert_eq!(
@@ -945,7 +958,7 @@ mod use_tun_tests {
             Some(&Value::from("fdfe:dcba:9876::1/64"))
         );
 
-        let without_ipv6 = use_tun(Mapping::new(), true);
+        let without_ipv6 = use_tun(Mapping::new(), true, false);
         let dns = dns_of(&without_ipv6).expect("dns should be written");
         assert!(!dns.contains_key(Value::from("fake-ip-range6")));
     }
@@ -956,7 +969,7 @@ mod use_tun_tests {
         // resolver is restored, which is not part of the configuration.
         let config = mapping(&[("dns", Value::Mapping(mapping(&[("enable", Value::from(false))])))]);
 
-        let result = use_tun(config, false);
+        let result = use_tun(config, false, false);
 
         let dns = dns_of(&result).expect("dns should be untouched");
         assert_eq!(dns.get(Value::from("enable")), Some(&Value::from(false)));

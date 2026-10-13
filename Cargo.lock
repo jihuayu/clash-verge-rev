@@ -1119,6 +1119,7 @@ dependencies = [
  "clash-verge-limiter",
  "clash-verge-logging",
  "clash-verge-media-unlock",
+ "clash-verge-mesh",
  "clash-verge-signal",
  "clash_verge_logger",
  "clash_verge_service_ipc",
@@ -1231,6 +1232,16 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
+]
+
+[[package]]
+name = "clash-verge-mesh"
+version = "0.1.0"
+dependencies = [
+ "ipnet",
+ "serde",
+ "serde_json",
+ "serde_yaml_ng",
 ]
 
 [[package]]

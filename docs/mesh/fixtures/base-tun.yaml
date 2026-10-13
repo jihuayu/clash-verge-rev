@@ -1,0 +1,22 @@
+mode: rule
+ipv6: true
+mixed-port: 17890
+rules:
+  - MATCH,ordinary-proxy
+tun:
+  enable: true
+  stack: mixed
+  auto-route: true
+  strict-route: false
+  dns-hijack: [any:53]
+dns:
+  enable: true
+  enhanced-mode: fake-ip
+  fake-ip-range: 198.18.0.1/16
+  nameserver: [https://1.1.1.1/dns-query]
+
+proxies:
+  - name: ordinary-proxy
+    type: socks5
+    server: 192.0.2.2
+    port: 1080

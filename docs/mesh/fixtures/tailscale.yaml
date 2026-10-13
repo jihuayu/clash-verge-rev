@@ -1,0 +1,17 @@
+# Synthetic TEST DATA, never apply unchanged to a real device.
+enabled: true
+external_policy_reviewed: true
+experimental_tun: false
+internet_interface: en0
+transport_processes: [tailscaled]
+providers:
+  - kind: tailscale
+    interface: utun8
+    cidrs:
+      - 100.101.2.3/32
+      - 100.100.100.100/32
+      - fd7a:115c:a1e0::123/128
+      - 10.24.8.0/24
+    domains: [example.ts.net]
+    dns_server: 100.100.100.100
+    default_route: false

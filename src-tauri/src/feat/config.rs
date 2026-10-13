@@ -12,6 +12,11 @@ use tokio::sync::MutexGuard;
 
 /// Patch Clash configuration
 pub async fn patch_clash(patch: &Mapping) -> Result<()> {
+    if let Some(mode) = patch.get("mode").and_then(serde_yaml_ng::Value::as_str) {
+        super::clash::validate_mesh_mode(mode)
+            .await
+            .map_err(anyhow::Error::msg)?;
+    }
     Config::clash().await.edit_draft(|d| d.patch_config(patch));
 
     let res = {
@@ -145,7 +150,7 @@ fn determine_update_flags(patch: &IVerge) -> UpdateFlags {
     if restart_core_needed {
         update_flags.insert(UpdateFlags::RESTART_CORE);
     }
-    if tun_mode.is_some() {
+    if tun_mode.is_some() || patch.mesh_coexistence.is_some() {
         update_flags.insert(UpdateFlags::CLASH_CONFIG | UpdateFlags::GROUP_SYS_TRAY);
     }
     if enable_global_hotkey.is_some() || home_cards.is_some() {
@@ -345,6 +350,17 @@ pub async fn fetch_verge_config() -> Result<SharedDraft<IVerge>> {
 #[cfg(test)]
 mod tests {
     use super::{IVerge, SystemProxyStateUnknown, may_commit_system_proxy_disabled};
+
+    #[test]
+    fn mesh_patch_rebuilds_core_configuration_without_os_proxy_flags() {
+        let patch = IVerge {
+            mesh_coexistence: Some(clash_verge_mesh::MeshConfig::default()),
+            ..IVerge::default()
+        };
+        let flags = super::determine_update_flags(&patch);
+        assert!(flags.contains(super::UpdateFlags::CLASH_CONFIG));
+        assert!(!flags.intersects(super::UpdateFlags::SYS_PROXY | super::UpdateFlags::RESTART_CORE));
+    }
 
     fn state_unknown() -> anyhow::Error {
         anyhow::anyhow!("networksetup refused")

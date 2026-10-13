@@ -86,6 +86,7 @@ fn after_change_clash_mode() {
 
 /// Propagates mihomo PATCH failures so the frontend can roll back its optimistic mode.
 pub async fn change_clash_mode(mode: String) -> Result<(), String> {
+    validate_mesh_mode(&mode).await?;
     let mut mapping = Mapping::new();
     mapping.insert(Value::from("mode"), Value::from(mode.as_str()));
     let json_value = serde_json::json!({
@@ -182,4 +183,19 @@ pub async fn test_delay(url: String) -> anyhow::Result<u32> {
     })
     .await
     .unwrap_or(Ok(10000u32))
+}
+
+/// Guard every app mode entry point; raw external-controller clients remain outside this guard.
+pub(super) async fn validate_mesh_mode(mode: &str) -> Result<(), String> {
+    if mode != "rule"
+        && Config::verge()
+            .await
+            .latest_arc()
+            .mesh_coexistence
+            .as_ref()
+            .is_some_and(|m| m.enabled)
+    {
+        return Err("Disable Tailscale coexistence before leaving Rule mode".into());
+    }
+    Ok(())
 }

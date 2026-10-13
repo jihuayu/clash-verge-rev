@@ -10,7 +10,7 @@ macro_rules! revise {
     };
 }
 
-pub fn use_tun(mut config: Mapping, enable: bool) -> Mapping {
+pub fn use_tun(mut config: Mapping, enable: bool, _manage_system_dns: bool) -> Mapping {
     let tun_key = Value::from("tun");
     let tun_val = config.get(&tun_key);
     let mut tun_val = tun_val.map_or_else(Mapping::new, |val| {
@@ -48,7 +48,7 @@ pub fn use_tun(mut config: Mapping, enable: bool) -> Mapping {
             }
 
             #[cfg(target_os = "macos")]
-            {
+            if _manage_system_dns {
                 AsyncHandler::spawn(move || async move {
                     crate::utils::resolve::dns::restore_public_dns().await;
                     crate::utils::resolve::dns::set_public_dns("114.114.114.114".to_string()).await;
@@ -59,9 +59,11 @@ pub fn use_tun(mut config: Mapping, enable: bool) -> Mapping {
         revise!(config, "dns", dns_val);
     } else {
         #[cfg(target_os = "macos")]
-        AsyncHandler::spawn(move || async move {
-            crate::utils::resolve::dns::restore_public_dns().await;
-        });
+        if _manage_system_dns {
+            AsyncHandler::spawn(move || async move {
+                crate::utils::resolve::dns::restore_public_dns().await;
+            });
+        }
     }
 
     revise!(tun_val, "enable", enable);

@@ -31,6 +31,7 @@ identifier = "io.github.clash-verge-rev.clash-verge-rev"
 tauri-build = { version = "2.6.3", features = [] }
 
 [dependencies]
+clash-verge-mesh = { path = "../crates/clash-verge-mesh" }
 clash-verge-draft = { workspace = true }
 clash-verge-media-unlock = { workspace = true }
 clash-verge-logging = { workspace = true }

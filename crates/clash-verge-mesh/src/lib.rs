@@ -4,6 +4,9 @@ use serde::{Deserialize, Serialize};
 use serde_yaml_ng::{Mapping, Value};
 use std::net::IpAddr;
 
+mod embedded;
+pub use embedded::{EmbeddedTailscale, EMBEDDED_PROXY, compile_embedded};
+
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct MeshConfig {

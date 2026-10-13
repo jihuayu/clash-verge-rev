@@ -4,6 +4,77 @@ use network_interface::{NetworkInterface, NetworkInterfaceConfig};
 use serde::Serialize;
 use serde_yaml_ng::Mapping;
 
+#[derive(Default, serde::Deserialize, Serialize)]
+pub struct EmbeddedStatus {
+    pub state: String,
+    #[serde(default)]
+    pub auth_url: Option<String>,
+    #[serde(default)]
+    pub hostname: Option<String>,
+    #[serde(default)]
+    pub dns_name: Option<String>,
+    #[serde(default)]
+    pub ips: Vec<String>,
+    #[serde(default)]
+    pub tailnet: Option<String>,
+}
+
+async fn embedded_request(method: reqwest::Method) -> CmdResult<EmbeddedStatus> {
+    let request = crate::core::handle::Handle::mihomo().load_ctx()
+        .build_request(method.clone(), "/proxies/VERGE-TAILSCALE/tailscale")
+        .map_err(CommandFailure::plain)?;
+    let response = request.timeout(std::time::Duration::from_secs(15)).send().await
+        .map_err(|_| CommandFailure::plain("无法连接内核，请确认内核正在运行"))?;
+    if response.status() == reqwest::StatusCode::NOT_FOUND {
+        return Err(CommandFailure::coded("TAILSCALE_CORE_REQUIRED", "当前内核不支持登录管理，请使用带 Tailscale 登录接口的 Mihomo 内核"));
+    }
+    if !response.status().is_success() {
+        return Err(CommandFailure::plain("Tailscale 操作失败，请稍后重试"));
+    }
+    if method == reqwest::Method::DELETE {
+        return Ok(EmbeddedStatus { state: "NeedsLogin".into(), ..Default::default() });
+    }
+    if method == reqwest::Method::PATCH {
+        return Ok(EmbeddedStatus { state: "Stopped".into(), ..Default::default() });
+    }
+    response.json().await.map_err(|_| CommandFailure::plain("内核返回了无法识别的 Tailscale 状态"))
+}
+
+#[tauri::command]
+pub async fn get_embedded_tailscale_status() -> CmdResult<EmbeddedStatus> {
+    if !crate::config::Config::verge().await.latest_arc().embedded_tailscale.as_ref().is_some_and(|m| m.enabled) {
+        return Ok(EmbeddedStatus { state: "Disabled".into(), ..Default::default() });
+    }
+    embedded_request(reqwest::Method::GET).await
+}
+
+#[tauri::command]
+pub async fn login_embedded_tailscale() -> CmdResult<EmbeddedStatus> {
+    embedded_request(reqwest::Method::POST).await
+}
+
+#[tauri::command]
+pub async fn logout_embedded_tailscale() -> CmdResult<EmbeddedStatus> {
+    embedded_request(reqwest::Method::DELETE).await
+}
+
+#[tauri::command]
+pub async fn disconnect_embedded_tailscale() -> CmdResult<EmbeddedStatus> {
+    embedded_request(reqwest::Method::PATCH).await
+}
+
+#[tauri::command]
+pub async fn open_embedded_tailscale_login() -> CmdResult<()> {
+    let state = embedded_request(reqwest::Method::GET).await?;
+    let url = state.auth_url.ok_or_else(|| CommandFailure::plain("授权链接尚未就绪，请稍后重试"))?;
+    let parsed = reqwest::Url::parse(&url).map_err(CommandFailure::plain)?;
+    if parsed.scheme() != "https" || parsed.host_str() != Some("login.tailscale.com")
+        || !parsed.username().is_empty() || parsed.password().is_some() || parsed.port().is_some() {
+        return Err(CommandFailure::plain("内核返回了非官方 Tailscale 授权链接"));
+    }
+    open::that(url).map_err(CommandFailure::plain)
+}
+
 pub const fn mesh_platform() -> Platform {
     if cfg!(target_os = "windows") {
         Platform::Windows

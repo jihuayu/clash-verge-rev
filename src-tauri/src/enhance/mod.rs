@@ -33,6 +33,7 @@ struct ConfigValues {
     clash_core: Option<String>,
     enable_tun: bool,
     mesh_coexistence: Option<clash_verge_mesh::MeshConfig>,
+    embedded_tailscale: Option<clash_verge_mesh::EmbeddedTailscale>,
     enable_builtin: bool,
     socks_enabled: bool,
     http_enabled: bool,
@@ -141,6 +142,7 @@ async fn get_config_values() -> ConfigValues {
     let tproxy_enabled = verge_arc.verge_tproxy_enabled.unwrap_or(false);
 
     let mesh_coexistence = verge_arc.mesh_coexistence.clone();
+    let embedded_tailscale = verge_arc.embedded_tailscale.clone();
     drop(verge_arc);
     drop(verge);
 
@@ -149,6 +151,7 @@ async fn get_config_values() -> ConfigValues {
         clash_core,
         enable_tun,
         mesh_coexistence,
+        embedded_tailscale,
         enable_builtin,
         socks_enabled,
         http_enabled,
@@ -713,6 +716,7 @@ pub async fn enhance(profiles: &IProfiles) -> Result<(Mapping, HashSet<String>, 
         clash_core,
         enable_tun,
         mesh_coexistence,
+        embedded_tailscale,
         enable_builtin,
         socks_enabled,
         http_enabled,
@@ -753,7 +757,11 @@ pub async fn enhance(profiles: &IProfiles) -> Result<(Mapping, HashSet<String>, 
     );
 
     let config = apply_builtin_scripts(config, clash_core, enable_builtin).await;
-    let mesh_enabled = mesh_coexistence.as_ref().is_some_and(|m| m.enabled);
+    let mesh_enabled = mesh_coexistence.as_ref().is_some_and(|m| m.enabled)
+        || embedded_tailscale.as_ref().is_some_and(|m| m.enabled);
+    if mesh_coexistence.as_ref().is_some_and(|m| m.enabled) && embedded_tailscale.as_ref().is_some_and(|m| m.enabled) {
+        anyhow::bail!("Disable native Tailscale coexistence before using embedded Tailscale");
+    }
     let config = use_tun(config, enable_tun, !mesh_enabled);
     let config = apply_dns_settings(config, enable_dns_settings).await;
 
@@ -784,6 +792,9 @@ pub async fn enhance(profiles: &IProfiles) -> Result<(Mapping, HashSet<String>, 
     } else {
         config
     };
+    let config = if let Some(embedded) = embedded_tailscale {
+        clash_verge_mesh::compile_embedded(&config, &embedded).map_err(anyhow::Error::msg)?
+    } else { config };
     let config = use_sort(config);
 
     let mut exists_keys_set = HashSet::new();

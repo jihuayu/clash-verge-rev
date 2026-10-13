@@ -1,5 +1,10 @@
 # Tailscale coexistence (review implementation)
 
+> The current settings UI uses embedded Tailscale through the Mihomo fork. See
+> [embedded Tailscale and Windows preview builds](EMBEDDED-TAILSCALE.md) for the
+> current architecture, build instructions and verification limits. The native
+> client coexistence design below is retained as historical implementation notes.
+
 Scope was narrowed to **Tailscale first** on 2026-10-13. Cloudflare Mesh is deferred and rejected by the compiler. This is an opt-in implementation for review, not a certification of simultaneous VPN operation. Nothing was installed, enrolled, launched as a proxy, or applied to the developer machine's networking during development.
 
 ## Architecture and behavior

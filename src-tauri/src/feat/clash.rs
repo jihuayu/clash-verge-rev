@@ -187,6 +187,9 @@ pub async fn test_delay(url: String) -> anyhow::Result<u32> {
 
 /// Guard every app mode entry point; raw external-controller clients remain outside this guard.
 pub(super) async fn validate_mesh_mode(mode: &str) -> Result<(), String> {
+    if mode != "rule" && Config::verge().await.latest_arc().embedded_tailscale.as_ref().is_some_and(|m| m.enabled) {
+        return Err("Disconnect Tailscale before leaving Rule mode".into());
+    }
     if mode != "rule"
         && Config::verge()
             .await

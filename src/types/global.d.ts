@@ -882,6 +882,7 @@ interface IVergeConfig {
   tray_proxy_groups_display_mode?: 'default' | 'inline' | 'disable'
   tray_inline_outbound_modes?: boolean
   mesh_coexistence?: IMeshCoexistence
+  embedded_tailscale?: IEmbeddedTailscale
   enable_tun_mode?: boolean
   enable_auto_light_weight_mode?: boolean
   auto_light_weight_minutes?: number
@@ -1066,4 +1067,11 @@ interface IMeshCoexistence {
     default_route: boolean
     traffic_and_dns: boolean
   }[]
+}
+
+interface IEmbeddedTailscale {
+  enabled: boolean
+  hostname: string
+  domains: string[]
+  cidrs: string[]
 }

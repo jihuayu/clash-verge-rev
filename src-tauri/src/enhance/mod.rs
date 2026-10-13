@@ -1,3 +1,4 @@
+use crate::core::notify::NoticeStatus;
 mod chain;
 pub mod field;
 mod merge;
@@ -7,12 +8,14 @@ mod tun;
 
 use self::{
     chain::{AsyncChainItemFrom as _, ChainItem, ChainType},
-    field::{use_keys, use_lowercase, use_sort},
+    field::{use_keys, use_lowercase_owned, use_sort},
     merge::use_merge,
     script::use_script,
     seq::{SeqMap, use_seq},
     tun::use_tun,
 };
+use crate::config::dns::{DnsOverrideState, dns_override_source};
+use crate::core::handle::Handle;
 use crate::utils::dirs;
 use crate::{
     config::{Config, IProfiles, IVerge, PrfItem},
@@ -21,6 +24,7 @@ use crate::{
 };
 use anyhow::{Context as _, Result};
 use clash_verge_logging::{Type, logging};
+use parking_lot::Mutex;
 use serde_yaml_ng::{Mapping, Value};
 use smartstring::alias::String;
 use std::collections::{HashMap, HashSet};
@@ -38,6 +42,7 @@ struct ConfigValues {
     socks_enabled: bool,
     http_enabled: bool,
     enable_dns_settings: bool,
+    dns_override_confirmation: Option<String>,
     enable_external_controller: bool,
     #[cfg(not(target_os = "windows"))]
     redir_enabled: bool,
@@ -103,7 +108,7 @@ async fn chain_item_or_default(item: Option<&PrfItem>, default_item: impl FnOnce
     }
 }
 
-async fn get_config_values() -> ConfigValues {
+async fn get_config_values(profile_uid: &str) -> ConfigValues {
     let clash = Config::clash().await;
     let clash_arc = clash.latest_arc();
     let clash_config = clash_arc.0.clone();
@@ -118,21 +123,20 @@ async fn get_config_values() -> ConfigValues {
         ref enable_builtin_enhanced,
         ref verge_socks_enabled,
         ref verge_http_enabled,
-        ref enable_dns_settings,
         ref enable_external_controller,
         ..
     } = **verge_arc;
     let enable_external_controller = enable_external_controller.unwrap_or(false);
+    let dns_settings = verge_arc.dns_settings_for(profile_uid);
+    let dns_override_confirmation = dns_settings.confirmation;
 
     let (clash_core, enable_tun, enable_builtin, socks_enabled, http_enabled, enable_dns_settings) = (
         Some(verge_arc.get_valid_clash_core()),
-        enable_tun_mode.unwrap_or(false)
-            && !Config::tun_suppressed_for_session()
-            && !cfg!(feature = "coexistence-test"),
+        enable_tun_mode.unwrap_or(false) && !cfg!(feature = "coexistence-test"),
         enable_builtin_enhanced.unwrap_or(true),
         verge_socks_enabled.unwrap_or(false),
         verge_http_enabled.unwrap_or(false),
-        enable_dns_settings.unwrap_or(false),
+        dns_settings.enabled,
     );
 
     #[cfg(not(target_os = "windows"))]
@@ -156,6 +160,7 @@ async fn get_config_values() -> ConfigValues {
         socks_enabled,
         http_enabled,
         enable_dns_settings,
+        dns_override_confirmation,
         enable_external_controller,
         #[cfg(not(target_os = "windows"))]
         redir_enabled,
@@ -166,7 +171,7 @@ async fn get_config_values() -> ConfigValues {
 
 #[allow(clippy::cognitive_complexity)]
 async fn collect_profile_items(profiles: &IProfiles) -> Result<ProfileItems> {
-    let current_profile_uid = match profiles.get_current().cloned() {
+    let current_profile_uid = match profiles.current.clone() {
         Some(uid) => uid,
         None => return Ok(ProfileItems::default()),
     };
@@ -251,22 +256,33 @@ async fn process_global_items(
     global_merge: ChainItem,
     global_script: ChainItem,
     profile_name: &String,
+    authoritative: &AuthoritativeFields,
 ) -> (Mapping, Vec<String>, HashMap<String, ResultLog>) {
     if let ChainType::Merge(merge) = global_merge.data {
         exists_keys.extend(use_keys(&merge));
+        let before = authoritative.current(&config);
         config = use_merge(&merge, config);
+        let notes: ResultLog = authoritative
+            .overridden(&before, &authoritative.current(&config))
+            .into_iter()
+            .map(discarded_note)
+            .collect();
+        if !notes.is_empty() {
+            result_map.entry(global_merge.uid).or_default().extend(notes);
+        }
     }
 
     if let ChainType::Script(script) = global_script.data {
-        let mut logs = vec![];
-        match use_script(script, config.clone(), profile_name.clone()).await {
-            Ok((res_config, res_logs)) => {
-                extend_changed_keys(&mut exists_keys, &config, &res_config);
-                config = res_config;
-                logs.extend(res_logs);
-            }
-            Err(err) => logs.push(("exception".into(), err.to_string().into())),
-        }
+        let before = authoritative.current(&config);
+        let (res_config, changed_keys, mut logs) = use_script(script, config, profile_name.clone()).await;
+        exists_keys.extend(changed_keys);
+        config = res_config;
+        logs.extend(
+            authoritative
+                .overridden(&before, &authoritative.current(&config))
+                .into_iter()
+                .map(discarded_note),
+        );
         result_map.insert(global_script.uid, logs);
     }
 
@@ -294,22 +310,7 @@ fn process_seq_items(
     config
 }
 
-fn extend_changed_keys(exists_keys: &mut Vec<String>, config: &Mapping, res_config: &Mapping) {
-    exists_keys.extend(res_config.iter().filter_map(|(key, value)| {
-        if config.get(key) == Some(value) {
-            return None;
-        }
-
-        key.as_str().map(|key| {
-            let mut key: String = key.into();
-            key.make_ascii_lowercase();
-            key
-        })
-    }));
-}
-
-/// App 权威的顶层控制面键:核心连接、监听端口、UI/托盘开关。
-/// 平台键随 cfg 门控;`dns.ipv6` 单独处理。
+/// App-owned control-plane keys; DNS settings are captured separately.
 const CONTROL_PLANE_KEYS: &[&str] = &[
     "external-controller",
     #[cfg(unix)]
@@ -325,7 +326,6 @@ const CONTROL_PLANE_KEYS: &[&str] = &[
     "redir-port",
     #[cfg(target_os = "linux")]
     "tproxy-port",
-    "tun",
     "mode",
     "allow-lan",
     "log-level",
@@ -333,29 +333,117 @@ const CONTROL_PLANE_KEYS: &[&str] = &[
     "unified-delay",
 ];
 
-/// The fields the app owns, held across the stages that apply the user's manual overrides.
-///
-/// Capturing and restoring are one value rather than two calls because the order is a
-/// correctness requirement, not a style: capture must happen after the app has finished
-/// deriving these fields and before any override runs, and restore must happen after every
-/// override. As four separate calls that contract lived only in comments.
+/// App-owned fields: captured after the app derives them, enforced after every override.
 struct AuthoritativeFields {
     control_plane: Mapping,
-    /// Only tracked when the DNS page owns it; otherwise overrides may set `dns.ipv6` freely.
-    dns_ipv6: Option<Value>,
+    tun: Mapping,
+    dns: Mapping,
+    hosts: Option<Value>,
 }
 
 impl AuthoritativeFields {
-    fn capture(config: &Mapping, enable_dns_settings: bool) -> Self {
+    fn capture(config: &Mapping, gui_tun_keys: &[Value], mut dns_settings: Mapping) -> Self {
         Self {
             control_plane: snapshot_control_plane(config),
-            dns_ipv6: enable_dns_settings.then(|| snapshot_dns_ipv6(config)).flatten(),
+            tun: snapshot_tun(config, gui_tun_keys),
+            dns: take_mapping(&mut dns_settings, "dns"),
+            hosts: dns_settings.remove("hosts"),
         }
     }
 
     fn enforce(self, config: Mapping) -> Mapping {
         let config = enforce_control_plane(config, self.control_plane);
-        enforce_dns_ipv6(config, self.dns_ipv6)
+        let mut config = enforce_tun(config, self.tun);
+        if !self.dns.is_empty() {
+            let mut dns = take_mapping(&mut config, "dns");
+            dns.extend(self.dns);
+            config.insert("dns".into(), dns.into());
+        }
+        if let Some(hosts) = self.hosts {
+            config.insert("hosts".into(), hosts);
+        }
+        config
+    }
+
+    /// The owned values as `config` holds them now, for diffing one override.
+    fn current(&self, config: &Mapping) -> Self {
+        let tun_keys: Vec<Value> = self.tun.keys().cloned().collect();
+        let dns = config.get("dns").and_then(Value::as_mapping);
+        Self {
+            control_plane: snapshot_control_plane(config),
+            tun: snapshot_tun(config, &tun_keys),
+            dns: self
+                .dns
+                .keys()
+                .filter_map(|key| Some((key.clone(), dns?.get(key)?.clone())))
+                .collect(),
+            hosts: self.hosts.as_ref().and_then(|_| config.get("hosts")).cloned(),
+        }
+    }
+
+    /// Owned keys an override moved off the app value; `enforce` discards those writes.
+    fn overridden(&self, before: &Self, after: &Self) -> Vec<String> {
+        let mut keys = Vec::new();
+        for &key in CONTROL_PLANE_KEYS {
+            if before.control_plane.get(key) != after.control_plane.get(key)
+                && after.control_plane.get(key) != self.control_plane.get(key)
+            {
+                keys.push(key.into());
+            }
+        }
+        for key in self.tun.keys() {
+            if before.tun.get(key) != after.tun.get(key) && after.tun.get(key) != self.tun.get(key) {
+                keys.push(format!("tun.{}", key.as_str().unwrap_or_default()).into());
+            }
+        }
+        for key in self.dns.keys() {
+            if before.dns.get(key) != after.dns.get(key) && after.dns.get(key) != self.dns.get(key) {
+                keys.push(format!("dns.{}", key.as_str().unwrap_or_default()).into());
+            }
+        }
+        if self.hosts.is_some() && before.hosts != after.hosts && after.hosts != self.hosts {
+            keys.push("hosts".into());
+        }
+        keys
+    }
+}
+
+fn discarded_note(key: String) -> (String, String) {
+    (
+        "warn".into(),
+        format!("`{key}` is managed by Settings; the value written here was discarded").into(),
+    )
+}
+
+struct DiscardedKeysNotice {
+    pending: Option<String>,
+    last: Vec<String>,
+}
+
+static DISCARDED_KEYS_NOTICE: Mutex<DiscardedKeysNotice> = Mutex::new(DiscardedKeysNotice {
+    pending: None,
+    last: Vec::new(),
+});
+
+pub(crate) fn take_discarded_keys_notice() -> Option<String> {
+    DISCARDED_KEYS_NOTICE.lock().pending.take()
+}
+
+/// One notice per distinct set, so regenerations with unchanged extensions stay quiet.
+fn notify_discarded_keys(keys: Vec<String>) {
+    let mut notice = DISCARDED_KEYS_NOTICE.lock();
+    if notice.last == keys {
+        return;
+    }
+    let should_notify = !keys.is_empty();
+    if should_notify {
+        notice.pending = Some(keys.join(", ").into());
+    }
+    notice.last = keys;
+    drop(notice);
+
+    if should_notify {
+        Handle::notice(NoticeStatus::EnhanceDiscardedKeys, "");
     }
 }
 
@@ -383,27 +471,49 @@ fn enforce_control_plane(mut config: Mapping, snapshot: Mapping) -> Mapping {
     config
 }
 
-/// DNS 页权威的嵌套开关;只在 `enable_dns_settings` 时快照。
-fn snapshot_dns_ipv6(config: &Mapping) -> Option<Value> {
-    config.get("dns")?.get("ipv6").cloned()
+/// Only saved GUI fields and the verge switch override profile settings.
+fn gui_tun_keys(clash_config: &Mapping) -> Vec<Value> {
+    let mut keys = vec![Value::from("enable")];
+    if let Some(Value::Mapping(tun)) = clash_config.get("tun") {
+        keys.extend(
+            constants::tun::GUI_KEYS
+                .iter()
+                .filter(|key| tun.contains_key(**key))
+                .map(|key| Value::from(*key)),
+        );
+    }
+    keys
 }
 
-/// 恢复 `dns.ipv6`,但不创建缺失的 `dns` 块。
-fn enforce_dns_ipv6(mut config: Mapping, dns_ipv6: Option<Value>) -> Mapping {
-    if let Some(dns_ipv6) = dns_ipv6
-        && let Some(Value::Mapping(dns)) = config.get_mut("dns")
-    {
-        dns.insert(Value::from("ipv6"), dns_ipv6);
+fn snapshot_tun(config: &Mapping, gui_tun_keys: &[Value]) -> Mapping {
+    let mut snapshot = Mapping::new();
+    if let Some(Value::Mapping(tun)) = config.get("tun") {
+        for key in gui_tun_keys {
+            if let Some(value) = tun.get(key) {
+                snapshot.insert(key.clone(), value.clone());
+            }
+        }
     }
+    snapshot
+}
+
+fn enforce_tun(mut config: Mapping, snapshot: Mapping) -> Mapping {
+    if snapshot.is_empty() {
+        return config;
+    }
+    let mut tun = config
+        .get("tun")
+        .and_then(Value::as_mapping)
+        .cloned()
+        .unwrap_or_default();
+    tun.extend(snapshot);
+    config.insert(Value::from("tun"), Value::Mapping(tun));
     config
 }
 
 fn is_loopback_bind_address(addr: &str) -> bool {
     let addr = addr.trim();
-    let addr = addr
-        .strip_prefix('[')
-        .and_then(|addr| addr.strip_suffix(']'))
-        .unwrap_or(addr);
+    let addr = addr.strip_circumfix('[', ']').unwrap_or(addr);
 
     addr.eq_ignore_ascii_case("localhost")
         || addr.parse::<std::net::IpAddr>().is_ok_and(|addr| addr.is_loopback())
@@ -447,33 +557,40 @@ async fn process_profile_items(
     merge_item: ChainItem,
     script_item: ChainItem,
     profile_name: &String,
+    authoritative: &AuthoritativeFields,
 ) -> (Mapping, Vec<String>, HashMap<String, ResultLog>) {
     if let ChainType::Merge(merge) = merge_item.data {
         exists_keys.extend(use_keys(&merge));
+        let before = authoritative.current(&config);
         config = use_merge(&merge, config);
+        let notes: ResultLog = authoritative
+            .overridden(&before, &authoritative.current(&config))
+            .into_iter()
+            .map(discarded_note)
+            .collect();
+        if !notes.is_empty() {
+            result_map.entry(merge_item.uid).or_default().extend(notes);
+        }
     }
 
     if let ChainType::Script(script) = script_item.data {
-        let mut logs = vec![];
-        match use_script(script, config.clone(), profile_name.clone()).await {
-            Ok((res_config, res_logs)) => {
-                extend_changed_keys(&mut exists_keys, &config, &res_config);
-                config = res_config;
-                logs.extend(res_logs);
-            }
-            Err(err) => logs.push(("exception".into(), err.to_string().into())),
-        }
+        let before = authoritative.current(&config);
+        let (res_config, changed_keys, mut logs) = use_script(script, config, profile_name.clone()).await;
+        exists_keys.extend(changed_keys);
+        config = res_config;
+        logs.extend(
+            authoritative
+                .overridden(&before, &authoritative.current(&config))
+                .into_iter()
+                .map(discarded_note),
+        );
         result_map.insert(script_item.uid, logs);
     }
 
     (config, exists_keys, result_map)
 }
 
-/// Merge the Application Merge Config over the profile's own configuration.
-///
-/// Every switch it consults is a parameter: it used to read `enable_external_controller`
-/// out of the global config from inside its loop, which made a stage that looks pure depend
-/// on process state and left it untestable.
+/// Merges the app's clash config over the profile; switches are parameters to keep it pure.
 fn merge_default_config(
     mut config: Mapping,
     clash_config: Mapping,
@@ -544,24 +661,23 @@ fn merge_default_config(
     config
 }
 
-async fn apply_builtin_scripts(mut config: Mapping, clash_core: Option<String>, enable_builtin: bool) -> Mapping {
+fn apply_builtin_scripts(mut config: Mapping, clash_core: Option<String>, enable_builtin: bool) -> Mapping {
     if enable_builtin {
         let items: Vec<_> = ChainItem::builtin()
             .into_iter()
             .filter(|(s, _)| s.is_support(clash_core.as_ref()))
             .map(|(_, c)| c)
             .collect();
-        for item in items {
-            logging!(debug, Type::Core, "run builtin script {}", item.uid);
-            if let ChainType::Script(script) = item.data {
-                match use_script(script, config.clone(), String::from("")).await {
-                    Ok((res_config, _)) => {
-                        config = res_config;
-                    }
-                    Err(err) => {
-                        logging!(error, Type::Core, "builtin script error `{err}`");
-                    }
-                }
+        if !items.is_empty() {
+            // The JS path saw a lowercased view; lowercase once, only when a builtin runs.
+            config = use_lowercase_owned(config);
+            for item in items {
+                logging!(debug, Type::Core, "run builtin script {}", item.uid);
+                config = match item.uid.as_str() {
+                    "verge_hy_alpn" => builtin_hy_alpn(config),
+                    "verge_meta_guard" => builtin_meta_guard(config),
+                    _ => config,
+                };
             }
         }
     }
@@ -569,8 +685,31 @@ async fn apply_builtin_scripts(mut config: Mapping, clash_core: Option<String>, 
     config
 }
 
+fn builtin_hy_alpn(mut config: Mapping) -> Mapping {
+    if let Some(Value::Sequence(proxies)) = config.get_mut("proxies") {
+        for proxy in proxies.iter_mut() {
+            let Some(proxy) = proxy.as_mapping_mut() else { continue };
+            let is_hysteria = proxy.get("type").and_then(Value::as_str) == Some("hysteria");
+            if is_hysteria && let Some(Value::String(alpn)) = proxy.get("alpn").cloned() {
+                proxy.insert("alpn".into(), Value::Sequence(vec![Value::String(alpn)]));
+            }
+        }
+    }
+
+    config
+}
+
+fn builtin_meta_guard(mut config: Mapping) -> Mapping {
+    if config.get("mode").and_then(Value::as_str) == Some("script") {
+        config.insert(Value::from("mode"), Value::from("rule"));
+    }
+
+    config
+}
+
 fn cleanup_proxy_groups(mut config: Mapping) -> Mapping {
-    const BUILTIN_POLICIES: &[&str] = &["DIRECT", "REJECT", "REJECT-DROP", "PASS"];
+    // built-in proxies docs: https://wiki.metacubex.one/config/proxies/built-in
+    const BUILTIN_POLICIES: &[&str] = &["DIRECT", "REJECT", "REJECT-DROP", "PASS", "PASS-RULE"];
 
     let proxy_names = config
         .get("proxies")
@@ -649,9 +788,7 @@ fn cleanup_proxy_groups(mut config: Mapping) -> Mapping {
     config
 }
 
-/// 当 DNS 处于 fake-ip 模式且启用 IPv6 时，补充缺失的 `fake-ip-range6`，
-/// 否则 AAAA 查询无法获得 fake-ip，导致 IPv6 解析失败（见 issue #7373）。
-/// 兼容旧版本生成的、缺少该字段的 dns_config.yaml。
+/// fake-ip + IPv6 缺少 `fake-ip-range6` 时补默认值，否则 AAAA 无法解析（#7373）。
 fn ensure_fake_ip_range6(dns: &mut Mapping) {
     use serde_yaml_ng::Value;
 
@@ -670,47 +807,82 @@ fn ensure_fake_ip_range6(dns: &mut Mapping) {
         .unwrap_or(true);
 
     if ipv6_enabled && is_fake_ip && range6_missing {
-        dns.insert(Value::from("fake-ip-range6"), Value::from("fdfe:dcba:9876::1/64"));
+        dns.insert(Value::from("fake-ip-range6"), Value::from("2001:2::0/64"));
     }
 }
 
-async fn apply_dns_settings(mut config: Mapping, enable_dns_settings: bool) -> Mapping {
+/// On, non-blank text, or non-empty list/map; anything else keeps the profile's value.
+fn is_set(value: &Value) -> bool {
+    match value {
+        Value::Null => false,
+        Value::Bool(on) => *on,
+        Value::String(text) => !text.trim().is_empty(),
+        Value::Sequence(items) => !items.is_empty(),
+        Value::Mapping(map) => !map.is_empty(),
+        Value::Number(_) | Value::Tagged(_) => true,
+    }
+}
+
+fn take_mapping(config: &mut Mapping, key: &str) -> Mapping {
+    config
+        .get_mut(key)
+        .and_then(Value::as_mapping_mut)
+        .map(std::mem::take)
+        .unwrap_or_default()
+}
+
+fn merge_dns_config(mut config: Mapping, mut dns_config: Mapping) -> (Mapping, Mapping) {
+    let mut applied = Mapping::new();
+    if let Some(Value::Mapping(hosts)) = dns_config.remove("hosts")
+        && !hosts.is_empty()
+    {
+        applied.insert("hosts".into(), hosts.clone().into());
+        config.insert("hosts".into(), hosts.into());
+        logging!(debug, Type::Core, "apply hosts configuration");
+    }
+
+    // Legacy layout: no `dns` root.
+    let dns_override = match dns_config.remove("dns") {
+        Some(Value::Mapping(dns)) => Some(dns),
+        Some(_) => None,
+        None => Some(dns_config),
+    };
+    if let Some(mut dns_override) = dns_override {
+        dns_override.retain(|_, value| is_set(value));
+        if !dns_override.is_empty() {
+            applied.insert("dns".into(), dns_override.clone().into());
+        }
+        let mut dns = take_mapping(&mut config, "dns");
+        dns.extend(dns_override);
+        ensure_fake_ip_range6(&mut dns);
+        config.insert("dns".into(), dns.into());
+        logging!(debug, Type::Core, "apply dns_config.yaml");
+    }
+    (config, applied)
+}
+
+/// Returns the merged config and the non-empty fields owned by the DNS page.
+async fn apply_dns_settings(config: Mapping, enable_dns_settings: bool) -> (Mapping, Mapping) {
     if enable_dns_settings && let Ok(app_dir) = dirs::app_home_dir() {
         let dns_path = app_dir.join(constants::files::DNS_CONFIG);
 
         if dns_path.exists()
             && let Ok(dns_yaml) = fs::read_to_string(&dns_path).await
-            && let Ok(dns_config) = serde_yaml_ng::from_str::<serde_yaml_ng::Mapping>(&dns_yaml)
+            && let Ok(dns_config) = serde_yaml_ng::from_str::<Mapping>(&dns_yaml)
         {
-            if let Some(hosts_value) = dns_config.get("hosts")
-                && hosts_value.is_mapping()
-            {
-                config.insert("hosts".into(), hosts_value.clone());
-                logging!(info, Type::Core, "apply hosts configuration");
-            }
-
-            if let Some(dns_value) = dns_config.get("dns") {
-                if let Some(dns_mapping) = dns_value.as_mapping() {
-                    let mut dns_mapping = dns_mapping.clone();
-                    ensure_fake_ip_range6(&mut dns_mapping);
-                    config.insert("dns".into(), dns_mapping.into());
-                    logging!(info, Type::Core, "apply dns_config.yaml (dns section)");
-                }
-            } else {
-                let mut dns_config = dns_config;
-                ensure_fake_ip_range6(&mut dns_config);
-                config.insert("dns".into(), dns_config.into());
-                logging!(info, Type::Core, "apply dns_config.yaml");
-            }
+            return merge_dns_config(config, dns_config);
         }
     }
 
-    config
+    (config, Mapping::new())
 }
 
-/// Returns the enhanced profile, its original keys, and script logs.
-pub async fn enhance(profiles: &IProfiles) -> Result<(Mapping, HashSet<String>, HashMap<String, ResultLog>)> {
-    let cfg_vals = get_config_values().await;
+/// Returns the enhanced profile, its original keys, script logs, and DNS override decision.
+pub async fn enhance(
+    profiles: &IProfiles,
+) -> Result<(Mapping, HashSet<String>, HashMap<String, ResultLog>, DnsOverrideState)> {
+    let profile_uid = profiles.current.as_deref().unwrap_or_default();
+    let cfg_vals = get_config_values(profile_uid).await;
     let ConfigValues {
         clash_config,
         clash_core,
@@ -721,6 +893,7 @@ pub async fn enhance(profiles: &IProfiles) -> Result<(Mapping, HashSet<String>, 
         socks_enabled,
         http_enabled,
         enable_dns_settings,
+        dns_override_confirmation,
         enable_external_controller,
         #[cfg(not(target_os = "windows"))]
         redir_enabled,
@@ -729,6 +902,13 @@ pub async fn enhance(profiles: &IProfiles) -> Result<(Mapping, HashSet<String>, 
     } = cfg_vals;
 
     let profile = collect_profile_items(profiles).await?;
+    let dns_override = DnsOverrideState::new(
+        profile_uid,
+        dns_override_source(profile_uid, &profile.config)?,
+        enable_dns_settings,
+        dns_override_confirmation,
+    );
+    let enable_dns_settings = dns_override.enabled;
     let config = profile.config;
     let merge_item = profile.merge_item;
     let script_item = profile.script_item;
@@ -743,6 +923,7 @@ pub async fn enhance(profiles: &IProfiles) -> Result<(Mapping, HashSet<String>, 
 
     let config = process_seq_items(config, rules_item, proxies_item, groups_item);
     let exists_keys = use_keys(&config).collect::<Vec<_>>();
+    let gui_tun_keys = gui_tun_keys(&clash_config);
 
     let config = merge_default_config(
         config,
@@ -756,16 +937,14 @@ pub async fn enhance(profiles: &IProfiles) -> Result<(Mapping, HashSet<String>, 
         tproxy_enabled,
     );
 
-    let config = apply_builtin_scripts(config, clash_core, enable_builtin).await;
-    let mesh_enabled = mesh_coexistence.as_ref().is_some_and(|m| m.enabled)
-        || embedded_tailscale.as_ref().is_some_and(|m| m.enabled);
+    let config = apply_builtin_scripts(config, clash_core, enable_builtin);
     if mesh_coexistence.as_ref().is_some_and(|m| m.enabled) && embedded_tailscale.as_ref().is_some_and(|m| m.enabled) {
         anyhow::bail!("Disable native Tailscale coexistence before using embedded Tailscale");
     }
-    let config = use_tun(config, enable_tun, !mesh_enabled);
-    let config = apply_dns_settings(config, enable_dns_settings).await;
+    let config = use_tun(config, enable_tun);
+    let (config, dns_settings) = apply_dns_settings(config, enable_dns_settings).await;
 
-    let authoritative = AuthoritativeFields::capture(&config, enable_dns_settings);
+    let authoritative = AuthoritativeFields::capture(&config, &gui_tun_keys, dns_settings);
 
     let (config, exists_keys, result_map) = process_global_items(
         config,
@@ -774,12 +953,22 @@ pub async fn enhance(profiles: &IProfiles) -> Result<(Mapping, HashSet<String>, 
         global_merge,
         global_script,
         &profile_name,
+        &authoritative,
     )
     .await;
 
-    let (config, exists_keys, result_map) =
-        process_profile_items(config, exists_keys, result_map, merge_item, script_item, &profile_name).await;
+    let (config, exists_keys, result_map) = process_profile_items(
+        config,
+        exists_keys,
+        result_map,
+        merge_item,
+        script_item,
+        &profile_name,
+        &authoritative,
+    )
+    .await;
 
+    notify_discarded_keys(authoritative.overridden(&authoritative, &authoritative.current(&config)));
     let config = authoritative.enforce(config);
     let config = ensure_lan_bind_address(config);
 
@@ -794,13 +983,15 @@ pub async fn enhance(profiles: &IProfiles) -> Result<(Mapping, HashSet<String>, 
     };
     let config = if let Some(embedded) = embedded_tailscale {
         clash_verge_mesh::compile_embedded(&config, &embedded).map_err(anyhow::Error::msg)?
-    } else { config };
+    } else {
+        config
+    };
     let config = use_sort(config);
 
     let mut exists_keys_set = HashSet::new();
     exists_keys_set.extend(exists_keys);
 
-    Ok((config, exists_keys_set, result_map))
+    Ok((config, exists_keys_set, result_map, dns_override))
 }
 
 #[cfg(test)]
@@ -816,7 +1007,7 @@ mod fake_ip_tests {
         map
     }
 
-    const RANGE6: &str = "fdfe:dcba:9876::1/64";
+    const RANGE6: &str = "2001:2::0/64";
 
     #[test]
     fn an_ipv6_fake_ip_setup_missing_its_range_gets_one() {
@@ -838,8 +1029,7 @@ mod fake_ip_tests {
 
     #[test]
     fn a_hand_edited_empty_range_counts_as_missing() {
-        // The reason this is not just a `contains_key` check: YAML edited by hand often
-        // leaves the key present with nothing after the colon.
+        // Hand-edited YAML may leave the key present but empty.
         for blank in ["", "   "] {
             let mut config = dns(&[
                 ("ipv6", Value::from(true)),
@@ -915,11 +1105,11 @@ mod use_tun_tests {
     #[tokio::test]
     async fn the_switch_is_written_either_way() {
         assert_eq!(
-            tun_of(&use_tun(Mapping::new(), true, false)).get(Value::from("enable")),
+            tun_of(&use_tun(Mapping::new(), true)).get(Value::from("enable")),
             Some(&Value::from(true))
         );
         assert_eq!(
-            tun_of(&use_tun(Mapping::new(), false, false)).get(Value::from("enable")),
+            tun_of(&use_tun(Mapping::new(), false)).get(Value::from("enable")),
             Some(&Value::from(false))
         );
     }
@@ -928,14 +1118,14 @@ mod use_tun_tests {
     async fn existing_tun_keys_survive_being_switched_on() {
         let config = mapping(&[("tun", Value::Mapping(mapping(&[("stack", Value::from("gvisor"))])))]);
 
-        let result = use_tun(config, true, false);
+        let result = use_tun(config, true);
 
         assert_eq!(tun_of(&result).get(Value::from("stack")), Some(&Value::from("gvisor")));
     }
 
     #[tokio::test]
     async fn enabling_tun_sets_up_fake_ip_dns() {
-        let result = use_tun(Mapping::new(), true, false);
+        let result = use_tun(Mapping::new(), true);
 
         let dns = dns_of(&result).expect("enabling tun should write dns settings");
         assert_eq!(dns.get(Value::from("enable")), Some(&Value::from(true)));
@@ -954,7 +1144,7 @@ mod use_tun_tests {
             Value::Mapping(mapping(&[("enhanced-mode", Value::from("redir-host"))])),
         )]);
 
-        let result = use_tun(config, true, false);
+        let result = use_tun(config, true);
 
         let dns = dns_of(&result).expect("dns should still be present");
         assert_eq!(dns.get(Value::from("enhanced-mode")), Some(&Value::from("redir-host")));
@@ -963,26 +1153,25 @@ mod use_tun_tests {
 
     #[tokio::test]
     async fn the_ipv6_fake_ip_range_follows_the_top_level_switch() {
-        let with_ipv6 = use_tun(mapping(&[("ipv6", Value::from(true))]), true, false);
+        let with_ipv6 = use_tun(mapping(&[("ipv6", Value::from(true))]), true);
         let dns = dns_of(&with_ipv6).expect("dns should be written");
         assert_eq!(dns.get(Value::from("ipv6")), Some(&Value::from(true)));
         assert_eq!(
             dns.get(Value::from("fake-ip-range6")),
-            Some(&Value::from("fdfe:dcba:9876::1/64"))
+            Some(&Value::from("2001:2::0/64"))
         );
 
-        let without_ipv6 = use_tun(Mapping::new(), true, false);
+        let without_ipv6 = use_tun(Mapping::new(), true);
         let dns = dns_of(&without_ipv6).expect("dns should be written");
         assert!(!dns.contains_key(Value::from("fake-ip-range6")));
     }
 
     #[tokio::test]
     async fn switching_tun_off_leaves_dns_untouched() {
-        // Turning TUN off must not rewrite DNS the user or profile chose; only the system
-        // resolver is restored, which is not part of the configuration.
+        // TUN off must not rewrite the DNS the profile chose.
         let config = mapping(&[("dns", Value::Mapping(mapping(&[("enable", Value::from(false))])))]);
 
-        let result = use_tun(config, false, false);
+        let result = use_tun(config, false);
 
         let dns = dns_of(&result).expect("dns should be untouched");
         assert_eq!(dns.get(Value::from("enable")), Some(&Value::from(false)));
@@ -1012,8 +1201,7 @@ mod use_sort_tests {
 
     #[test]
     fn the_bulky_list_fields_are_written_last() {
-        // These are the fields that make a config file unreadable from the top, so they are
-        // pushed below the settings a human actually scans for.
+        // Bulky list fields go last so the top of the file stays readable.
         let mut config = Mapping::new();
         config.insert(Value::from("rules"), Value::from("rules"));
         config.insert(Value::from("mode"), Value::from("rule"));
@@ -1103,8 +1291,7 @@ mod merge_default_config_tests {
 
     #[test]
     fn a_disabled_listener_is_removed_rather_than_merged() {
-        // Removed, not just skipped: the profile may have asked for the port itself, and a
-        // listener the user switched off must not be opened by the profile's own value.
+        // Removed, not skipped: the profile's own value must not reopen a disabled listener.
         let config = mapping(&[("socks-port", Value::from(7891)), ("port", Value::from(7890))]);
         let clash_config = mapping(&[("socks-port", Value::from(1080)), ("port", Value::from(8080))]);
 
@@ -1126,8 +1313,7 @@ mod merge_default_config_tests {
 
     #[test]
     fn a_disabled_external_controller_is_blanked_rather_than_dropped() {
-        // Blanked, not removed: an absent key lets mihomo fall back to its own default and
-        // listen anyway, which is the opposite of what switching it off means.
+        // Blanked, not removed: an absent key makes mihomo listen on its default.
         let clash_config = mapping(&[("external-controller", Value::from("127.0.0.1:9090"))]);
 
         let merged = merge(Mapping::new(), clash_config, false);
@@ -1197,7 +1383,7 @@ mod authoritative_field_tests {
     #[test]
     fn an_override_cannot_change_a_field_the_app_owns() {
         let derived = config_with(&[("mode", Value::from("rule")), ("secret", Value::from("ours"))]);
-        let authoritative = AuthoritativeFields::capture(&derived, false);
+        let authoritative = AuthoritativeFields::capture(&derived, &[], Mapping::new());
 
         let overridden = config_with(&[("mode", Value::from("global")), ("secret", Value::from("theirs"))]);
         let result = authoritative.enforce(overridden);
@@ -1210,7 +1396,7 @@ mod authoritative_field_tests {
     fn an_override_cannot_introduce_a_field_the_app_left_out() {
         // The app decided not to expose the external controller; a profile must not re-add it.
         let derived = Mapping::new();
-        let authoritative = AuthoritativeFields::capture(&derived, false);
+        let authoritative = AuthoritativeFields::capture(&derived, &[], Mapping::new());
 
         let overridden = config_with(&[("external-controller", Value::from("0.0.0.0:9090"))]);
         let result = authoritative.enforce(overridden);
@@ -1221,7 +1407,7 @@ mod authoritative_field_tests {
     #[test]
     fn fields_the_app_does_not_own_survive_an_override() {
         let derived = config_with(&[("mode", Value::from("rule"))]);
-        let authoritative = AuthoritativeFields::capture(&derived, false);
+        let authoritative = AuthoritativeFields::capture(&derived, &[], Mapping::new());
 
         let overridden = config_with(&[("mode", Value::from("global")), ("profile-key", Value::from(1))]);
         let result = authoritative.enforce(overridden);
@@ -1233,7 +1419,7 @@ mod authoritative_field_tests {
     fn dns_ipv6_is_only_reclaimed_when_the_dns_page_owns_it() {
         let derived = config_with(&[("dns", dns_with_ipv6(true))]);
 
-        let owned = AuthoritativeFields::capture(&derived, true);
+        let owned = AuthoritativeFields::capture(&derived, &[], derived.clone());
         let restored = owned.enforce(config_with(&[("dns", dns_with_ipv6(false))]));
         assert_eq!(
             restored.get(Value::from("dns")).and_then(|dns| dns.get("ipv6")),
@@ -1241,7 +1427,7 @@ mod authoritative_field_tests {
             "with the DNS page on, the app's value wins"
         );
 
-        let unowned = AuthoritativeFields::capture(&derived, false);
+        let unowned = AuthoritativeFields::capture(&derived, &[], Mapping::new());
         let left_alone = unowned.enforce(config_with(&[("dns", dns_with_ipv6(false))]));
         assert_eq!(
             left_alone.get(Value::from("dns")).and_then(|dns| dns.get("ipv6")),
@@ -1251,14 +1437,13 @@ mod authoritative_field_tests {
     }
 
     #[test]
-    fn restoring_dns_ipv6_never_invents_a_dns_block() {
+    fn restoring_dns_settings_reinstates_a_removed_dns_block() {
         let derived = config_with(&[("dns", dns_with_ipv6(true))]);
-        let authoritative = AuthoritativeFields::capture(&derived, true);
+        let authoritative = AuthoritativeFields::capture(&derived, &[], derived.clone());
 
-        // An override removed DNS entirely; reinstating just `ipv6` would be a half-config.
         let result = authoritative.enforce(Mapping::new());
 
-        assert!(!result.contains_key(Value::from("dns")));
+        assert_eq!(result["dns"], derived["dns"]);
     }
 }
 
@@ -1266,13 +1451,96 @@ mod authoritative_field_tests {
 #[cfg(test)]
 mod tests {
     use super::{
-        ChainItem, ChainType, cleanup_proxy_groups, ensure_lan_bind_address, process_global_items,
-        process_profile_items, use_keys,
+        AuthoritativeFields, ChainItem, ChainType, Mapping, cleanup_proxy_groups, ensure_lan_bind_address,
+        process_global_items, process_profile_items, use_keys,
     };
     use std::collections::HashMap;
 
     fn mapping(yaml: &str) -> serde_yaml_ng::Mapping {
         serde_yaml_ng::from_str(yaml).expect("test config should be valid")
+    }
+
+    #[tokio::test]
+    async fn dns_settings_override_only_filled_fields_after_merge_and_script() {
+        let profile = mapping(
+            "dns: {nameserver: [9.9.9.9], nameserver-policy: {profile.example: 9.9.9.9}}\n\
+             hosts: {profile.example: 192.0.2.1}",
+        );
+        let settings = mapping(
+            "dns: {ipv6: true, nameserver: [8.8.8.8], nameserver-policy: {settings.example: 8.8.8.8},\n\
+             proxy-server-nameserver: [], fallback: null, listen: '  '}\n\
+             hosts: {settings.example: 192.0.2.2}",
+        );
+        let merge = mapping(
+            "dns: {ipv6: false, nameserver-policy: {merge.example: 1.1.1.1}}\n\
+             hosts: {merge.example: 192.0.2.3}",
+        );
+        let script = r#"function main(config) {
+            config.dns = {
+                ipv6: false,
+                nameserver: ["4.4.4.4"],
+                "nameserver-policy": {"script.example": "4.4.4.4"},
+                "proxy-server-nameserver": ["4.4.4.4"],
+                fallback: ["4.4.4.4"],
+                listen: "127.0.0.1:1053"
+            };
+            config.hosts = {"script.example": "192.0.2.4"};
+            return config;
+        }"#;
+
+        for enabled in [false, true] {
+            let (config, dns_settings) = if enabled {
+                super::merge_dns_config(profile.clone(), settings.clone())
+            } else {
+                (profile.clone(), Mapping::new())
+            };
+            let authoritative = AuthoritativeFields::capture(&config, &[], dns_settings);
+            let merge_item = |uid: &str| ChainItem {
+                uid: uid.into(),
+                data: ChainType::Merge(merge.clone()),
+            };
+            let profile_name = "test-profile".into();
+            let (config, keys, logs) = process_global_items(
+                config,
+                vec![],
+                HashMap::new(),
+                merge_item("global-merge"),
+                ChainItem::to_script("global-script", script),
+                &profile_name,
+                &authoritative,
+            )
+            .await;
+            let (config, _, logs) = process_profile_items(
+                config,
+                keys,
+                logs,
+                merge_item("profile-merge"),
+                ChainItem::to_script("profile-script", script),
+                &profile_name,
+                &authoritative,
+            )
+            .await;
+            let manual = config.clone();
+            let result = authoritative.enforce(config);
+
+            let source = if enabled { &settings } else { &manual };
+            assert_eq!(result["dns"]["nameserver-policy"], source["dns"]["nameserver-policy"]);
+            assert_eq!(result["hosts"], source["hosts"]);
+            assert_eq!(result["dns"]["nameserver"], source["dns"]["nameserver"]);
+            assert_eq!(result["dns"]["ipv6"], serde_yaml_ng::Value::from(enabled));
+            for key in ["proxy-server-nameserver", "fallback", "listen"] {
+                assert_eq!(result["dns"][key], manual["dns"][key]);
+            }
+            if enabled {
+                for uid in ["global-merge", "global-script", "profile-merge", "profile-script"] {
+                    assert!(
+                        logs[uid]
+                            .iter()
+                            .any(|(_, message)| message.contains("dns.nameserver-policy"))
+                    );
+                }
+            }
+        }
     }
 
     #[tokio::test]
@@ -1319,6 +1587,7 @@ mod tests {
         );
 
         let profile_name = "test-profile".into();
+        let authoritative = AuthoritativeFields::capture(&config, &[], Mapping::new());
         let (config, exists_keys, result_map) = process_global_items(
             config,
             exists_keys,
@@ -1326,6 +1595,7 @@ mod tests {
             global_merge,
             global_script,
             &profile_name,
+            &authoritative,
         )
         .await;
         let (config, exists_keys, _) = process_profile_items(
@@ -1335,6 +1605,7 @@ mod tests {
             profile_merge,
             profile_script,
             &profile_name,
+            &authoritative,
         )
         .await;
 
@@ -1472,19 +1743,21 @@ mod tests {
     }
 
     #[test]
-    fn dns_ipv6_follows_ui_but_other_dns_stays_overridable() {
+    fn empty_dns_settings_leave_inherited_fields_overridable() {
         let app_config = mapping(r#"{dns: {ipv6: false, proxy-server-nameserver: ["1.1.1.1"]}}"#);
-        let dns_ipv6 = super::snapshot_dns_ipv6(&app_config);
+        let (config, dns_settings) =
+            super::merge_dns_config(app_config, mapping("dns: {ipv6: false, proxy-server-nameserver: []}"));
+        let authoritative = AuthoritativeFields::capture(&config, &[], dns_settings);
 
         let hijacked = mapping(r#"{dns: {ipv6: true, proxy-server-nameserver: ["8.8.8.8"]}}"#);
-        let result = super::enforce_dns_ipv6(hijacked, dns_ipv6);
+        let result = authoritative.enforce(hijacked);
 
         assert_eq!(
             result
                 .get("dns")
                 .and_then(|value| value.get("ipv6"))
                 .and_then(serde_yaml_ng::Value::as_bool),
-            Some(false)
+            Some(true)
         );
         assert_eq!(
             result

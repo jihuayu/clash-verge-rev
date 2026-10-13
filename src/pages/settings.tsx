@@ -9,9 +9,9 @@ import SettingMesh from '@/components/setting/setting-mesh'
 import SettingSystem from '@/components/setting/setting-system'
 import SettingVergeAdvanced from '@/components/setting/setting-verge-advanced'
 import SettingVergeBasic from '@/components/setting/setting-verge-basic'
-import { openWebUrl } from '@/services/cmds'
 import { showNotice } from '@/services/notice-service'
 import { useThemeMode } from '@/services/states'
+import { openExternalUrl } from '@/utils/open-external-url'
 
 const SettingPage = () => {
   const { t } = useTranslation()
@@ -20,17 +20,21 @@ const SettingPage = () => {
     showNotice.error(err)
   }
 
-  const toGithubRepo = useLockFn(() => {
-    return openWebUrl('https://github.com/clash-verge-rev/clash-verge-rev')
-  })
+  const toGithubRepo = useLockFn(() =>
+    openExternalUrl('https://github.com/clash-verge-rev/clash-verge-rev').catch(
+      onError,
+    ),
+  )
 
-  const toGithubDoc = useLockFn(() => {
-    return openWebUrl('https://clash-verge-rev.github.io/index.html')
-  })
+  const toGithubDoc = useLockFn(() =>
+    openExternalUrl('https://clash-verge-rev.github.io/index.html').catch(
+      onError,
+    ),
+  )
 
-  const toTelegramChannel = useLockFn(() => {
-    return openWebUrl('https://t.me/clash_verge_re')
-  })
+  const toTelegramChannel = useLockFn(() =>
+    openExternalUrl('https://t.me/clash_verge_re').catch(onError),
+  )
 
   const mode = useThemeMode()
   const isDark = mode === 'light' ? false : true

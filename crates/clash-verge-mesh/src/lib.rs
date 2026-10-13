@@ -5,9 +5,10 @@ use serde_yaml_ng::{Mapping, Value};
 use std::net::IpAddr;
 
 mod embedded;
-pub use embedded::{EmbeddedTailscale, EMBEDDED_PROXY, compile_embedded};
+pub use embedded::{EMBEDDED_PROXY, EmbeddedTailscale, compile_embedded};
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[serde(default, deny_unknown_fields)]
 pub struct MeshConfig {
     pub enabled: bool,
@@ -22,6 +23,7 @@ pub struct MeshConfig {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[serde(rename_all = "kebab-case")]
 pub enum Kind {
     Tailscale,
@@ -29,6 +31,7 @@ pub enum Kind {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[serde(deny_unknown_fields)]
 pub struct Provider {
     pub kind: Kind,
@@ -37,6 +40,7 @@ pub struct Provider {
     #[serde(default)]
     pub domains: Vec<String>,
     /// Literal private resolver IP; no system/public resolver fallback.
+    #[cfg_attr(feature = "specta", specta(type = Option<String>))]
     pub dns_server: Option<IpAddr>,
     #[serde(default)]
     pub default_route: bool,
@@ -54,6 +58,7 @@ pub enum Platform {
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 pub struct Diagnostic {
     pub code: &'static str,
     pub message: &'static str,
@@ -406,6 +411,7 @@ mod tests;
 
 /// Redacted status: never exposes peers, addresses, user profiles or raw command output.
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 pub struct TailscaleStatus {
     pub state: &'static str,
     pub exit_node_selected: bool,

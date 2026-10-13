@@ -1,8 +1,5 @@
 use serde_yaml_ng::{Mapping, Value};
 
-#[cfg(target_os = "macos")]
-use crate::process::AsyncHandler;
-
 macro_rules! revise {
     ($map: expr, $key: expr, $val: expr) => {
         let ret_key = Value::String($key.into());
@@ -10,7 +7,7 @@ macro_rules! revise {
     };
 }
 
-pub fn use_tun(mut config: Mapping, enable: bool, _manage_system_dns: bool) -> Mapping {
+pub fn use_tun(mut config: Mapping, enable: bool) -> Mapping {
     let tun_key = Value::from("tun");
     let tun_val = config.get(&tun_key);
     let mut tun_val = tun_val.map_or_else(Mapping::new, |val| {
@@ -44,26 +41,11 @@ pub fn use_tun(mut config: Mapping, enable: bool, _manage_system_dns: bool) -> M
             }
 
             if ipv6_val && !dns_val.contains_key(Value::from("fake-ip-range6")) {
-                revise!(dns_val, "fake-ip-range6", "fdfe:dcba:9876::1/64");
-            }
-
-            #[cfg(target_os = "macos")]
-            if _manage_system_dns {
-                AsyncHandler::spawn(move || async move {
-                    crate::utils::resolve::dns::restore_public_dns().await;
-                    crate::utils::resolve::dns::set_public_dns("114.114.114.114".to_string()).await;
-                });
+                revise!(dns_val, "fake-ip-range6", "2001:2::0/64");
             }
         }
 
         revise!(config, "dns", dns_val);
-    } else {
-        #[cfg(target_os = "macos")]
-        if _manage_system_dns {
-            AsyncHandler::spawn(move || async move {
-                crate::utils::resolve::dns::restore_public_dns().await;
-            });
-        }
     }
 
     revise!(tun_val, "enable", enable);

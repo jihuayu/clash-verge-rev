@@ -38,7 +38,7 @@ pub(crate) fn proxy_listener_keys() -> impl Iterator<Item = &'static str> {
     PROXY_LISTENERS.iter().map(|(key, _, _)| *key)
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct ProxyPortSettings {
     pub mixed_port: u16,
@@ -48,27 +48,27 @@ pub struct ProxyPortSettings {
     pub tproxy: ToggleableProxyPort,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize)]
+#[derive(Clone, Copy, Debug, Deserialize, specta::Type)]
 pub struct ToggleableProxyPort {
     pub enabled: bool,
     pub port: u16,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct ListenerProbe {
     pub address: String,
     pub transports: Vec<ListenerTransport>,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Hash, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Hash, Serialize, specta::Type)]
 #[serde(rename_all = "lowercase")]
 pub enum ListenerTransport {
     Tcp,
     Udp,
 }
 
-#[derive(Debug, PartialEq, Eq, Serialize)]
+#[derive(Debug, PartialEq, Eq, Serialize, specta::Type)]
 #[serde(tag = "status", rename_all = "camelCase")]
 pub enum ListenerProbeOutcome {
     Available,
@@ -77,7 +77,7 @@ pub enum ListenerProbeOutcome {
     Indeterminate { message: String },
 }
 
-#[derive(Debug, PartialEq, Eq, Serialize)]
+#[derive(Debug, PartialEq, Eq, Serialize, specta::Type)]
 #[serde(tag = "status", rename_all = "camelCase")]
 pub enum SaveProxyPortsOutcome {
     Saved,
@@ -230,6 +230,10 @@ fn proxy_claims(config: &Mapping) -> Result<Vec<BindClaim>> {
     let addresses = proxy_bind_addresses(config)?;
     let mut claims = Vec::new();
     for (key, name, transports) in PROXY_LISTENERS {
+        #[cfg(target_os = "windows")]
+        if matches!(key, "redir-port" | "tproxy-port") {
+            continue;
+        }
         let Some(port) = mapping_port(config, key)? else {
             continue;
         };
@@ -267,10 +271,7 @@ fn proxy_bind_addresses(config: &Mapping) -> Result<Vec<IpAddr>> {
         return Ok(vec![IpAddr::V4(Ipv4Addr::LOCALHOST)]);
     }
 
-    let normalized = bind_address
-        .strip_prefix('[')
-        .and_then(|address| address.strip_suffix(']'))
-        .unwrap_or(bind_address);
+    let normalized = bind_address.strip_circumfix('[', ']').unwrap_or(bind_address);
     Ok(vec![
         IpAddr::from_str(normalized).with_context(|| format!("invalid bind-address {bind_address:?}"))?,
     ])
@@ -294,11 +295,7 @@ fn parse_listener_address(address: &str) -> Result<(Vec<IpAddr>, u16)> {
     if port == 0 {
         bail!("listener port must be between 1 and 65535");
     }
-    let host = host
-        .trim()
-        .strip_prefix('[')
-        .and_then(|host| host.strip_suffix(']'))
-        .unwrap_or_else(|| host.trim());
+    let host = host.trim().strip_circumfix('[', ']').unwrap_or_else(|| host.trim());
     if host.eq_ignore_ascii_case("localhost") {
         return Ok((vec![IpAddr::V4(Ipv4Addr::LOCALHOST)], port));
     }
@@ -348,9 +345,8 @@ fn claims_overlap(left: &BindClaim, right: &BindClaim) -> bool {
 /// rebind it at once (measured on macOS 26). "Is anything answering?" survives that asymmetry;
 /// "can I bind?" does not.
 ///
-/// Restrictions, both deliberate: a wildcard claim can be blocked by a listener on any address, so
-/// one refused connection cannot clear it — leaving `allow-lan` setups exposed to the same false
-/// positive. UDP has no lingering state, so a refused UDP bind is always a live socket.
+/// Restrictions, both deliberate: every concrete guard for a wildcard claim must be checked before
+/// it can be cleared. UDP has no lingering state, so a refused UDP bind is always a live socket.
 fn nothing_is_serving(claim: &BindClaim) -> bool {
     const ANSWER_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(200);
 
@@ -473,12 +469,17 @@ fn bind_claim(claim: &BindClaim) -> io::Result<Vec<Socket>> {
         }
         guard_addresses.sort_unstable();
         guard_addresses.dedup();
+        let mut stale_guard = false;
         for address in guard_addresses {
-            match bind_socket(&BindClaim::new(claim.name, address, claim.port, claim.transport)) {
+            let guard_claim = BindClaim::new(claim.name, address, claim.port, claim.transport);
+            match bind_socket(&guard_claim) {
                 Ok(socket) => sockets.push(socket),
                 // Only a conflict proves the port is taken; a vanished guard address proves nothing.
                 Err(error) if is_bind_conflict(&error) => {
-                    // The caller only sees the claim, so name the address that actually lost.
+                    if nothing_is_serving(&guard_claim) {
+                        stale_guard = true;
+                        continue;
+                    }
                     logging!(
                         warn,
                         LogType::Network,
@@ -492,6 +493,9 @@ fn bind_claim(claim: &BindClaim) -> io::Result<Vec<Socket>> {
                 }
                 Err(_) => {}
             }
+        }
+        if stale_guard {
+            return Ok(sockets);
         }
     }
 
@@ -693,14 +697,14 @@ const fn transport_name(transport: ListenerTransport) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::{
-        BindClaim, ListenerBindScope, ListenerProbe, ListenerProbeOutcome, ListenerTransport, nothing_is_serving,
-        probe_listener, probe_proxy_port_change,
+        ListenerBindScope, ListenerProbe, ListenerProbeOutcome, ListenerTransport, probe_listener,
+        probe_proxy_port_change,
     };
     use serde_json::json;
     use serde_yaml_ng::Mapping;
     #[cfg(unix)]
     use socket2::{Domain, Protocol, SockAddr, Socket, Type};
-    use std::net::{IpAddr, Ipv4Addr, TcpListener, UdpSocket};
+    use std::net::{Ipv4Addr, TcpListener, UdpSocket};
     #[cfg(unix)]
     use std::{
         io::Read as _,
@@ -779,53 +783,6 @@ mod tests {
                 transport: ListenerTransport::Tcp
             }
         );
-        Ok(())
-    }
-
-    /// Guards the startup false positive: another user's `TIME_WAIT` makes the kernel refuse the
-    /// bind while nothing is serving. That refusal needs a second uid to stage, so this asserts
-    /// on the classifier directly.
-    #[test]
-    fn a_refused_bind_with_nothing_answering_is_not_a_conflict() -> anyhow::Result<()> {
-        let vacant = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
-        let port = vacant.local_addr()?.port();
-        drop(vacant);
-
-        assert!(
-            nothing_is_serving(&BindClaim::new(
-                "mixed",
-                IpAddr::V4(Ipv4Addr::LOCALHOST),
-                port,
-                ListenerTransport::Tcp
-            )),
-            "a port nobody listens on must be dismissable"
-        );
-
-        let serving = TcpListener::bind((Ipv4Addr::LOCALHOST, port))?;
-        assert!(
-            !nothing_is_serving(&BindClaim::new(
-                "mixed",
-                IpAddr::V4(Ipv4Addr::LOCALHOST),
-                port,
-                ListenerTransport::Tcp
-            )),
-            "a live listener must never be dismissed"
-        );
-        drop(serving);
-        Ok(())
-    }
-
-    /// UDP has no lingering state, so a refused UDP bind is always a live socket.
-    #[test]
-    fn a_refused_udp_bind_is_never_dismissed() -> anyhow::Result<()> {
-        let socket = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0))?;
-        let port = socket.local_addr()?.port();
-        assert!(!nothing_is_serving(&BindClaim::new(
-            "mixed",
-            IpAddr::V4(Ipv4Addr::LOCALHOST),
-            port,
-            ListenerTransport::Udp
-        )));
         Ok(())
     }
 

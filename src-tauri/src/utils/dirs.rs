@@ -2,8 +2,10 @@ use crate::core::{CoreManager, handle, manager::RunningMode};
 use anyhow::Result;
 use async_trait::async_trait;
 use clash_verge_logging::{Type, logging};
-use once_cell::sync::OnceCell;
-use std::{fs, path::PathBuf};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
 use tauri::Manager as _;
 
 #[cfg(not(any(feature = "verge-dev", feature = "coexistence-test")))]
@@ -21,74 +23,21 @@ pub static APP_ID: &str = "io.github.clash-verge-rev.clash-verge-rev.coexistence
 #[cfg(feature = "coexistence-test")]
 pub static BACKUP_DIR: &str = "clash-verge-rev-backup-coexistence-test";
 
-pub static PORTABLE_FLAG: OnceCell<bool> = OnceCell::new();
-
 pub static CLASH_CONFIG: &str = "config.yaml";
 pub static VERGE_CONFIG: &str = "verge.yaml";
 pub static PROFILE_YAML: &str = "profiles.yaml";
 /// Marks that the one-shot raise of too-short auto-update intervals has already run.
 pub static UPDATE_INTERVAL_MIGRATED: &str = ".update-interval-migrated";
 
-pub fn init_portable_flag() -> Result<()> {
-    use tauri::utils::platform::current_exe;
-
-    let app_exe = current_exe()?;
-    if let Some(dir) = app_exe.parent() {
-        let dir = PathBuf::from(dir).join(".config/PORTABLE");
-
-        if dir.exists() {
-            PORTABLE_FLAG.get_or_init(|| true);
-        }
-    }
-    PORTABLE_FLAG.get_or_init(|| false);
-    Ok(())
-}
-
+/// Uses the same platform data resolver as Tauri, including before its handle exists.
 pub fn app_home_dir() -> Result<PathBuf> {
-    use tauri::utils::platform::current_exe;
-
-    let flag = PORTABLE_FLAG.get().unwrap_or(&false);
-    if *flag {
-        let app_exe = current_exe()?;
-        let app_exe = dunce::canonicalize(app_exe)?;
-        let app_dir = app_exe
-            .parent()
-            .ok_or_else(|| anyhow::anyhow!("failed to get the portable app dir"))?;
-        return Ok(PathBuf::from(app_dir).join(".config").join(APP_ID));
-    }
-
-    // Directory helpers can run before the Tauri handle is initialized.
-    let app_handle = handle::Handle::app_handle();
-
-    match app_handle.path().data_dir() {
-        Ok(dir) => Ok(dir.join(APP_ID)),
-        Err(e) => {
-            logging!(error, Type::File, "Failed to get the app home directory: {e}");
-            Err(anyhow::anyhow!("Failed to get the app homedirectory"))
-        }
-    }
+    ::dirs::data_dir()
+        .map(|root| root.join(APP_ID))
+        .ok_or_else(|| anyhow::anyhow!("Failed to get the app home directory"))
 }
 
 pub fn preinit_app_data_dir() -> Result<PathBuf> {
-    if PORTABLE_FLAG.get().copied().unwrap_or(false) {
-        let executable = std::env::current_exe()?;
-        let parent = executable
-            .parent()
-            .ok_or_else(|| anyhow::anyhow!("portable executable has no parent directory"))?;
-        return Ok(parent.join(".config").join(APP_ID));
-    }
-
-    #[cfg(target_os = "macos")]
-    let root = PathBuf::from(std::env::var_os("HOME").ok_or_else(|| anyhow::anyhow!("HOME is unavailable"))?)
-        .join("Library/Application Support");
-    #[cfg(target_os = "linux")]
-    let root = std::env::var_os("XDG_DATA_HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".local/share"));
-    #[cfg(windows)]
-    let root = PathBuf::from(std::env::var_os("APPDATA").ok_or_else(|| anyhow::anyhow!("APPDATA is unavailable"))?);
-
-    Ok(root.join(APP_ID))
+    app_home_dir()
 }
 
 pub fn app_resources_dir() -> Result<PathBuf> {
@@ -203,12 +152,9 @@ pub fn clash_latest_log() -> Result<PathBuf> {
     }
 }
 
-pub fn path_to_str(path: &PathBuf) -> Result<&str> {
-    let path_str = path
-        .as_os_str()
-        .to_str()
-        .ok_or_else(|| anyhow::anyhow!("failed to get path from {:?}", path))?;
-    Ok(path_str)
+pub fn path_to_str(path: &Path) -> Result<&str> {
+    path.to_str()
+        .ok_or_else(|| anyhow::anyhow!("failed to get path from {:?}", path))
 }
 
 pub fn get_encryption_key() -> Result<Vec<u8>> {
@@ -388,7 +334,7 @@ impl PathBufExec for PathBuf {
     async fn remove_if_exists(&self) -> Result<()> {
         if self.exists() {
             tokio::fs::remove_file(self).await?;
-            logging!(info, Type::File, "Removed file: {:?}", self);
+            logging!(debug, Type::File, "Removed file: {:?}", self);
         }
         Ok(())
     }

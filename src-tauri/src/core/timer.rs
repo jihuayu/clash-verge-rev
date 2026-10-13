@@ -132,7 +132,7 @@ impl Timer {
 
         if let Err(e) = self.refresh().await {
             self.initialized.store(false, Ordering::SeqCst);
-            logging_error!(Type::Timer, "Failed to initialize timer: {}", e);
+            logging!(error, Type::Timer, "Failed to initialize timer: {e:#}");
             return Err(e);
         }
 
@@ -153,7 +153,7 @@ impl Timer {
         // Redundant with first_delay == ZERO, kept as the immediate path; mark_task_running
         // no-ops whichever of the two arrives second.
         let cur_timestamp = chrono::Local::now().timestamp();
-        if let Some(items) = Config::profiles().await.data_arc().get_items() {
+        if let Some(items) = Config::profiles().await.data_arc().items.as_ref() {
             for item in items.iter() {
                 if let Some(option) = item.option.as_ref()
                     && option.allow_auto_update.unwrap_or(true)
@@ -204,7 +204,7 @@ impl Timer {
     }
 
     async fn gen_map(&self) -> HashMap<String, TaskSchedule> {
-        if let Some(items) = Config::profiles().await.data_arc().get_items() {
+        if let Some(items) = Config::profiles().await.data_arc().items.as_ref() {
             return Self::gen_map_from_items(items);
         }
 
@@ -424,7 +424,7 @@ impl Timer {
     }
 
     fn spawn_update_task(uid: String, command_tx: mpsc::UnboundedSender<TimerCommand>) {
-        logging!(info, Type::Timer, "Starting timer task: uid={}", uid);
+        logging!(debug, Type::Timer, "Starting timer task: uid={}", uid);
         AsyncHandler::spawn(move || async move {
             Self::wait_until_resolve_done(Duration::from_millis(5000)).await;
             Self::async_task(&uid).await;
@@ -446,7 +446,7 @@ impl Timer {
         let task_interval = *self.timer_map.read().get(uid)?;
         let profiles = Config::profiles().await;
         let profiles_guard = profiles.latest_arc();
-        let items = profiles_guard.get_items()?;
+        let items = profiles_guard.items.as_ref()?;
 
         let profile = items.iter().find(|item| item.uid.as_deref() == Some(uid))?;
         let updated = profile.updated.unwrap_or(0) as i64;
@@ -466,35 +466,20 @@ impl Timer {
         }
     }
 
+    #[tracing::instrument(skip_all, level = "info", fields(uid = %uid))]
     async fn async_task(uid: &String) {
-        let task_start = std::time::Instant::now();
         logging!(debug, Type::Timer, "Running timer task for profile: {}", uid);
 
         run_timer_profile_update_transition(
             || Self::emit_update_event(uid, true),
-            || async {
-                let is_current = Config::profiles().await.latest_arc().current.as_ref() == Some(uid);
-                logging!(
-                    debug,
-                    Type::Timer,
-                    "Profile {} is current active profile: {}",
-                    uid,
-                    is_current
-                );
-
-                feat::update_profile(uid, None, is_current, false, false).await
-            },
+            || feat::update_profile(uid, None, false),
             |result| match result {
                 Ok(_) => {
-                    logging!(
-                        info,
-                        Type::Timer,
-                        "Timer task completed for uid: {} (took {}ms)",
-                        uid,
-                        task_start.elapsed().as_millis()
-                    );
+                    logging!(debug, Type::Timer, "timer task completed for uid: {}", uid);
                 }
-                Err(e) => logging_error!(Type::Timer, "Failed to update profile uid {}: {}", uid, e),
+                Err(e) => {
+                    logging_error!(Type::Timer, "Failed to update profile uid {}: {e:#}", uid);
+                }
             },
             || Self::emit_update_event(uid, false),
         )

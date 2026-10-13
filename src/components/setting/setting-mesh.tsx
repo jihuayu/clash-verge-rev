@@ -24,21 +24,23 @@ import {
   TextField,
   Typography,
 } from '@mui/material'
-import { invoke } from '@tauri-apps/api/core'
 import { useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { useVerge } from '@/hooks/use-verge'
+import type { EmbeddedStatus } from '@/services/bindings'
+import {
+  disconnectEmbeddedTailscale,
+  getEmbeddedTailscaleStatus,
+  loginEmbeddedTailscale,
+  logoutEmbeddedTailscale,
+  openEmbeddedTailscaleLogin,
+} from '@/services/cmds'
 
-interface Status {
-  state: string
-  auth_url?: string
-  hostname?: string
-  dns_name?: string
-  ips: string[]
-  tailnet?: string
-}
-const defaults: IEmbeddedTailscale = {
+type Status = Required<Pick<EmbeddedStatus, 'state' | 'ips'>> &
+  Partial<EmbeddedStatus>
+
+const defaults: Required<IEmbeddedTailscale> = {
   enabled: false,
   hostname: 'clash-verge',
   domains: ['ts.net'],
@@ -59,7 +61,13 @@ export default function SettingMesh() {
   const { i18n } = useTranslation()
   const zh = i18n.language.startsWith('zh')
   const copy = (cn: string, en: string) => (zh ? cn : en)
-  const config = verge?.embedded_tailscale ?? defaults
+  const savedConfig = verge?.embedded_tailscale
+  const config = {
+    enabled: savedConfig?.enabled ?? defaults.enabled,
+    hostname: savedConfig?.hostname ?? defaults.hostname,
+    domains: savedConfig?.domains ?? defaults.domains,
+    cidrs: savedConfig?.cidrs ?? defaults.cidrs,
+  }
   const [open, setOpen] = useState(false)
   const [advanced, setAdvanced] = useState(false)
   const [status, setStatus] = useState<Status>({ state: 'Disabled', ips: [] })
@@ -94,8 +102,10 @@ export default function SettingMesh() {
     let stopped = false
     const poll = async () => {
       try {
-        const next = await invoke<Status>('get_embedded_tailscale_status')
-        if (!stopped && current === generationRef.current) setStatus(next)
+        const next = await getEmbeddedTailscaleStatus()
+        if (!stopped && current === generationRef.current) {
+          setStatus(next)
+        }
       } catch (err) {
         if (!stopped && current === generationRef.current) {
           setStatus({ state: 'Unavailable', ips: [] })
@@ -142,18 +152,18 @@ export default function SettingMesh() {
           ? { mesh_coexistence: { ...legacy, enabled: false } }
           : {}),
       })
-      setStatus(await invoke<Status>('login_embedded_tailscale'))
+      setStatus(await loginEmbeddedTailscale())
     })
   const disconnect = () =>
     run(async () => {
-      await invoke('disconnect_embedded_tailscale')
+      await disconnectEmbeddedTailscale()
       await patchVerge({ embedded_tailscale: { ...config, enabled: false } })
       ++generationRef.current
       setStatus({ state: 'Disabled', ips: [] })
     })
   const logout = () =>
     run(async () => {
-      await invoke('logout_embedded_tailscale')
+      await logoutEmbeddedTailscale()
       await patchVerge({ embedded_tailscale: { ...config, enabled: false } })
       ++generationRef.current
       setStatus({ state: 'Disabled', ips: [] })
@@ -339,7 +349,7 @@ export default function SettingMesh() {
                       disabled={busy || !status.auth_url}
                       onClick={() => {
                         void run(async () => {
-                          await invoke('open_embedded_tailscale_login')
+                          await openEmbeddedTailscaleLogin()
                         })
                       }}
                     >
@@ -355,9 +365,7 @@ export default function SettingMesh() {
                         startIcon={<RefreshRounded />}
                         onClick={() => {
                           void run(async () => {
-                            setStatus(
-                              await invoke<Status>('login_embedded_tailscale'),
-                            )
+                            setStatus(await loginEmbeddedTailscale())
                           })
                         }}
                       >

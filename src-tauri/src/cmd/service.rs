@@ -5,6 +5,11 @@ use crate::core::{
 };
 
 async fn execute_service_operation_sync(status: ServiceStatus, error_code: &str) -> CmdResult {
+    if cfg!(feature = "coexistence-test") {
+        return Err(super::CommandFailure::plain(
+            "Service changes are disabled in the isolated coexistence test build",
+        ));
+    }
     let manager = CoreManager::global();
     let _lifecycle = manager.lifecycle_lock.lock().await;
     if matches!(
@@ -29,6 +34,11 @@ pub async fn install_service() -> CmdResult {
 
 #[tauri::command]
 pub async fn uninstall_service() -> CmdResult {
+    if cfg!(feature = "coexistence-test") {
+        return Err(super::CommandFailure::plain(
+            "Service changes are disabled in the isolated coexistence test build",
+        ));
+    }
     CoreManager::global()
         .uninstall_service_and_start_sidecar()
         .await

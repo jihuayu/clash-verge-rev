@@ -19,6 +19,8 @@ default = ["custom-protocol"]
 custom-protocol = ["tauri/custom-protocol"]
 verge-dev = ["clash_verge_logger/color", "clash_verge_service_ipc/development-channel"]
 dev-sidecar = ["verge-dev"]
+# Isolated, unprivileged system-proxy acceptance build; preserves the macOS launch guard.
+coexistence-test = ["clash_verge_service_ipc/development-channel"]
 tauri-dev = []
 tokio-trace = ["console-subscriber"]
 clippy = ["tauri/test"]

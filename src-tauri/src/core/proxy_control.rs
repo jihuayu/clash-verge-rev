@@ -25,6 +25,22 @@ use std::{
 };
 use tokio::{sync::Mutex, time::timeout};
 
+// A fresh isolated test app must not disable another application's proxy on startup/exit.
+#[cfg(any(test, feature = "coexistence-test"))]
+#[derive(Default)]
+struct TestProxyOwnership(std::sync::atomic::AtomicBool);
+#[cfg(any(test, feature = "coexistence-test"))]
+impl TestProxyOwnership {
+    fn may_apply(&self, requested: bool) -> bool {
+        if requested {
+            self.0.store(true, Ordering::SeqCst);
+        }
+        self.0.load(Ordering::SeqCst)
+    }
+}
+#[cfg(feature = "coexistence-test")]
+static TEST_PROXY_OWNERSHIP: TestProxyOwnership = TestProxyOwnership(std::sync::atomic::AtomicBool::new(false));
+
 /// Actionable system-proxy failure attached to an `anyhow` chain.
 ///
 /// Classification remains downcastable while the original error stays available for diagnostics.
@@ -411,6 +427,10 @@ pub async fn apply() -> Result<()> {
     // Use the pre-apply snapshot when retiring matching failures.
     let verge = Config::verge().await.latest_arc();
     let enabled = verge.enable_system_proxy.unwrap_or_default();
+    #[cfg(feature = "coexistence-test")]
+    if !TEST_PROXY_OWNERSHIP.may_apply(enabled || verge.proxy_auto_config.unwrap_or_default()) {
+        return Ok(());
+    }
     let result = match proxy_backend_route(cfg!(target_os = "macos"), &running_mode) {
         ProxyBackendRoute::Local => match Sysopt::global().update_sysproxy().await {
             Ok(()) => Ok(()),
@@ -443,6 +463,10 @@ pub async fn apply() -> Result<()> {
 }
 
 pub async fn clear() -> Result<()> {
+    #[cfg(feature = "coexistence-test")]
+    if !TEST_PROXY_OWNERSHIP.may_apply(false) {
+        return Ok(());
+    }
     let result = clear_inner().await;
     // Clear failures must be filed even when a restart aborts before apply.
     settle_table(
@@ -1227,5 +1251,20 @@ mod tests {
             Some("SYSPROXY_DIRECT_FALLBACK")
         );
         assert!(format!("{error:#}").contains("service could not set the proxy"));
+    }
+}
+
+#[cfg(test)]
+mod coexistence_build_tests {
+    #[test]
+    fn isolated_proxy_ownership_preserves_external_proxy_until_opt_in() {
+        let state = super::TestProxyOwnership::default();
+        assert!(!state.may_apply(false), "startup must preserve another app's proxy");
+        assert!(!state.may_apply(false), "exit before opt-in must preserve it too");
+        assert!(state.may_apply(true), "claim before writes, including failed writes");
+        assert!(
+            state.may_apply(false),
+            "disable and cleanup remain available after opt-in"
+        );
     }
 }

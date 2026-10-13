@@ -23,6 +23,9 @@ fn restore_dns_state_dir(resource_dir: &Path, state_dir: PathBuf) -> PathBuf {
 }
 
 pub async fn set_public_dns(dns_server: String) {
+    if cfg!(feature = "coexistence-test") {
+        return;
+    }
     use crate::{core::handle, utils::dirs};
     use tauri_plugin_shell::ShellExt as _;
     let app_handle = handle::Handle::app_handle();
@@ -72,6 +75,9 @@ pub async fn set_public_dns(dns_server: String) {
 
 #[cfg(target_os = "macos")]
 pub async fn restore_public_dns() {
+    if cfg!(feature = "coexistence-test") {
+        return;
+    }
     use crate::{core::handle, utils::dirs};
     use tauri_plugin_shell::ShellExt as _;
     let app_handle = handle::Handle::app_handle();

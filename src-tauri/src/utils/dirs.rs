@@ -6,15 +6,20 @@ use once_cell::sync::OnceCell;
 use std::{fs, path::PathBuf};
 use tauri::Manager as _;
 
-#[cfg(not(feature = "verge-dev"))]
+#[cfg(not(any(feature = "verge-dev", feature = "coexistence-test")))]
 pub static APP_ID: &str = "io.github.clash-verge-rev.clash-verge-rev";
-#[cfg(not(feature = "verge-dev"))]
+#[cfg(not(any(feature = "verge-dev", feature = "coexistence-test")))]
 pub static BACKUP_DIR: &str = "clash-verge-rev-backup";
 
-#[cfg(feature = "verge-dev")]
+#[cfg(all(feature = "verge-dev", not(feature = "coexistence-test")))]
 pub static APP_ID: &str = "io.github.clash-verge-rev.clash-verge-rev.dev";
-#[cfg(feature = "verge-dev")]
+#[cfg(all(feature = "verge-dev", not(feature = "coexistence-test")))]
 pub static BACKUP_DIR: &str = "clash-verge-rev-backup-dev";
+
+#[cfg(feature = "coexistence-test")]
+pub static APP_ID: &str = "io.github.clash-verge-rev.clash-verge-rev.coexistence-test";
+#[cfg(feature = "coexistence-test")]
+pub static BACKUP_DIR: &str = "clash-verge-rev-backup-coexistence-test";
 
 pub static PORTABLE_FLAG: OnceCell<bool> = OnceCell::new();
 

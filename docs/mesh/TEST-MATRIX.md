@@ -9,9 +9,11 @@ Baseline: fork `jihuayu/clash-verge-rev`, dev `b80bca01`. Host: macOS arm64. No 
 | macOS backend compilation | `cargo check -p clash-verge --features clippy --jobs 2` passed; `clippy` feature skips Tauri resource packaging. No desktop process launched |
 | Frontend | `tsc --noEmit` passed; Vite production static build passed; changed-file ESLint/format verified |
 | Mihomo static syntax | Installed core `Meta v1.19.21 darwin arm64`, `-t` passed for synthetic system-proxy macOS, TUN macOS and TUN Windows configurations. Core never started listeners/TUN |
-| Windows | Same pure policy code exercised with Windows input; no Windows compiler, OS, service, driver or firewall tests executed |
+| Windows | Pure crate `cargo check --target x86_64-pc-windows-msvc --offline` passed. Full app check attempted with clang-cl 22.1.8, failed in aws-lc-sys because Windows SDK/UCRT headers (`stdlib.h`) are absent. No Windows executable/installer or runtime tests |
 | Live traffic / DNS capture | Not run: requires separate authorization |
-| Native app packaging/signing | Not produced; resource-skipping compile check is not a release build |
+| Native app packaging/signing | arm64 `fast-release` app built with `coexistence-test`; ad-hoc signature verified with `codesign --verify --deep --strict`. Gatekeeper read-only assessment rejected it. No launch, notarization or security bypass |
+| Isolated proxy ownership | Unit test passed: startup/exit preserve the external proxy until explicit opt-in; cleanup remains allowed after ownership |
+| Packaged core syntax | Downloaded stable Mihomo v1.19.32 passed `-t` for all three synthetic configurations; no listeners/TUN started |
 
 The initial pure-test attempt mixed rustc selection (dependency metadata from 1.96.1 versus 1.95.0). Retried successfully with explicit RUSTC 1.95.0 and isolated `target/mesh-tests-195`; no source workaround was added. Initial offline full-app checks lacked cached dependencies; downloaded approved build dependencies and retried. No dependency versions were intentionally upgraded.
 

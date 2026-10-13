@@ -58,7 +58,7 @@ cargo run -p clash-verge-mesh --example preview -- \
 
 ## Upstream/dependency impact
 
-No Mihomo, Tailscale, sysproxy, service or other upstream source patch is required for the current feature. It uses existing Mihomo direct adapters, interface binding, process rules, DNS selectors and TUN exclusions. The new Rust crate uses already present serde, serde_json, serde_yaml_ng and ipnet versions. Existing pinned git dependencies are unchanged. Native-resource packaging/signing and Windows runtime tests are separate remaining work.
+No Mihomo, Tailscale, sysproxy, service or other upstream source patch is required for the current feature. It uses existing Mihomo direct adapters, interface binding, process rules, DNS selectors and TUN exclusions. The new Rust crate uses already present serde, serde_json, serde_yaml_ng and ipnet versions. Existing pinned git dependencies are unchanged. A separate `coexistence-test` build isolates app data/IPC, blocks service/TUN/DNS mutations, and supports initial system-proxy acceptance. See [acceptance plan](ACCEPTANCE-PLAN.zh-CN.md), [safety review](SECURITY-REVIEW.md), and [build results/signing limits](BUILD-RESULTS.zh-CN.md). Windows runtime tests remain separate work.
 
 ## Evidence and sources
 

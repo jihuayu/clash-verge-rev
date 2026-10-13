@@ -275,6 +275,9 @@ async fn process_terminated_flags(update_flags: UpdateFlags, patch: &IVerge) -> 
 ///
 /// TUN patches do not always produce a Run State transition, so reconciliation is explicit.
 pub async fn patch_verge(patch: &IVerge, not_save_file: bool) -> Result<()> {
+    if cfg!(feature = "coexistence-test") && patch.enable_tun_mode == Some(true) {
+        anyhow::bail!("TUN is disabled in the isolated system-proxy acceptance build");
+    }
     apply_verge_patch(patch, not_save_file).await?;
     if patch.enable_tun_mode.is_some() {
         super::reconcile_tun_availability().await;

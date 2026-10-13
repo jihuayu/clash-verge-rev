@@ -1279,7 +1279,7 @@ impl ServiceManager {
     }
 
     pub async fn detect_startup_status(&self) {
-        if cfg!(feature = "dev-sidecar") {
+        if cfg!(any(feature = "dev-sidecar", feature = "coexistence-test")) {
             RUN_STATE.accept_sidecar();
             return;
         }
@@ -1314,6 +1314,9 @@ impl ServiceManager {
     }
 
     async fn apply_service_status(&self, status: ServiceStatus) -> Result<()> {
+        if cfg!(feature = "coexistence-test") && requested_action(&status).is_some() {
+            anyhow::bail!("Service changes are disabled in the isolated coexistence test build");
+        }
         // Use the caller's action; a racing observation may clear the stored pending action.
         let Some(action) = requested_action(&status) else {
             self.set_status(status.clone());

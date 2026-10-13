@@ -1,0 +1,30 @@
+{
+  "identifier": "io.github.clash-verge-rev.clash-verge-rev.coexistence-test",
+  "productName": "Clash Verge Tailscale Test",
+  "bundle": {
+    "createUpdaterArtifacts": false,
+    "targets": [
+      "app"
+    ],
+    "macOS": {
+      "signingIdentity": "-",
+      "entitlements": "packages/macos/coexistence-test-entitlements.plist",
+      "infoPlist": "packages/macos/coexistence-test-info.plist"
+    }
+  },
+  "plugins": {
+    "updater": {
+      "endpoints": []
+    },
+    "deep-link": {
+      "desktop": {
+        "schemes": [
+          "clash-verge-coexistence-test"
+        ]
+      }
+    }
+  },
+  "build": {
+    "beforeBuildCommand": "node node_modules/typescript/bin/tsc --noEmit && node node_modules/vite/bin/vite.js build"
+  }
+}
